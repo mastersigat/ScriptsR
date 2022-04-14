@@ -1,0 +1,847 @@
+---
+title: "DossierR"
+output: html_document
+---
+
+Le jeu de données que nous allons analyser provient de la plate-forme d'opendata de Los Angeles. Elle répertorie les
+crimes dans la ville de 2010 à 2021. Cette base contient 2.13 millions de lignes et 28 champs. Chaque lignes correspond à un crime. Il y a une multitude d'informations intéressantes à analyser avec en plus les coordonnées X / Y
+de chaque crime.
+
+# Preparation de R
+## Set working directory
+
+```{r}
+setwd("E:/ETUDE/SIGAT M2/Rendu R/Rendu R/TGA_R_Crime/TGA_R_Crime")
+
+rm(list = ls())
+```
+
+## Packages à installer
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("lubridate")
+#install.packages("sf")
+#install.packages("ggspatial")
+#install.packages("data.table")
+#install.packages("scales")
+#install.packages("mapsf")
+#install.packages("cluster")
+#install.packages("cartography")
+#install.packages("wesanderson")
+#install.packages("networkD3")
+#install.packages("devtools")
+```
+
+
+## Packages à charger
+
+```{r}
+library("sf")
+library("ggspatial")
+library("data.table")
+library("tidyverse")
+library("lubridate")
+library("scales")
+library("cluster")
+library("mapsf")
+library("cartography")
+library("wesanderson")
+library("networkD3")
+library("devtools")
+devtools::install_github("hrbrmstr/streamgraph")
+library("streamgraph")
+
+
+```
+
+
+
+## Données à importer
+
+```{r}
+crimesLA<-read.csv("Crime_Data_from_2010_to_2019.csv",sep = ",", header=TRUE)
+```
+
+
+# Netoyage des données
+
+Ici, on garde uniquement les champs qui nous intéressent
+
+```{r}
+crimesLA<- crimesLA %>% select(DR_NO, DATE.OCC, TIME.OCC, AREA, AREA.NAME, Rpt.Dist.No, Crm.Cd, Crm.Cd.Desc, Vict.Age, Vict.Sex, Vict.Descent, Premis.Desc, Weapon.Desc, Status.Desc, LAT, LON)
+
+```
+
+## Formatage des datas
+
+Ici, on va reclassifier plusieurs champs: les armes, les ethnies, les crimes (selon la terminologie indiquée par LAPD), car il y a trop de modalités pour faire une analyse. 
+
+### Reclassification des agressions
+
+On passe de 80 modalités à seulement 8
+
+```{r}
+
+crimesLA = crimesLA %>% mutate(TypeAgression = (case_when(Weapon.Desc %in% c("STRONG-ARM (HANDS, FIST, FEET OR BODILY FORCE)","PHYSICAL PRESENCE","BRASS KNUCKLES","DOG/ANIMAL (SIC ANIMAL ON)")~"Physique",
+                                                     
+          Weapon.Desc %in%("VERBAL THREAT")~"Agression verbale",
+          
+          Weapon.Desc %in% c("UNKNOWN WEAPON/OTHER WEAPON","CAUSTIC CHEMICAL/POISON","DEMAND NOTE",
+          "SCALDING LIQUID","LIQUOR/DRUGS","SYRINGE","BOW AND ARROW")~"Inclassable",
+          
+          Weapon.Desc %in% c("HAND GUN","SEMI-AUTOMATIC PISTOL","UNKNOWN FIREARM","	
+          REVOLVER","SIMULATED GUN","AIR PISTOL/REVOLVER/RIFLE/BB GUN","SHOTGUN","OTHER FIREARM",
+          "RIFLE","BOMB THREAT","TOY GUN","AUTOMATIC WEAPON/SUB-MACHINE GUN",
+          "ASSAULT WEAPON/UZI/AK47/ETC","EXPLOXIVE DEVICE","SAWED OFF RIFLE/SHOTGUN",
+          "HECKLER & KOCH 93 SEMIAUTOMATIC ASSAULT RIFLE","STARTER PISTOL/REVOLVER",
+          "SEMI-AUTOMATIC RIFLE","UZI SEMIAUTOMATIC ASSAULT RIFLE",
+          "UNK TYPE SEMIAUTOMATIC ASSAULT RIFLE","RELIC FIREARM",
+          "HECKLER & KOCH 91 SEMIAUTOMATIC ASSAULT RIFLE","MAC-10 SEMIAUTOMATIC ASSAULT WEAPON",
+          "ANTIQUE FIREARM","M1-1 SEMIAUTOMATIC ASSAULT RIFLE","MAC-11 SEMIAUTOMATIC ASSAULT WEAPON",
+          "M-14 SEMIAUTOMATIC ASSAULT RIFLE")~"Arme à feu",
+          
+          Weapon.Desc %in% c("KNIFE WITH BLADE 6INCHES OR LESS","OTHER KNIFE","FOLDING KNIFE",
+          "BLUNT INSTRUMENT","KITCHEN KNIFE","KNIFE WITH BLADE OVER 6 INCHES IN LENGTH",
+          "OTHER CUTTING INSTRUMENT","UNKNOWN TYPE CUTTING INSTRUMENT","MACHETE","SCISSORS",
+          "SWITCH BLADE","AXE","RAZOR BLADE","RAZOR","SWORD","ICE PICK","DIRK/DAGGER","CLEAVER",
+          "BOWIE KNIFE","STRAIGHT RAZOR")~"Arme coupante",
+          
+          Weapon.Desc %in% c("BOTTLE","CLUB/BAT","BELT FLAILING INSTRUMENT/CHAIN",
+          "PIPE/METAL PIPE","SCREWDRIVER","HAMMER","CONCRETE BLOCK/BRICK","FIXED OBJECT",
+          "BOARD","FIRE","GLASS","TIRE IRON","ROPE/LIGATURE","VEHICLE")~"Objet du quotidien",
+          
+          Weapon.Desc %in% c("ROCK/THROWN OBJECT","STICK")~"Objet de la nature",
+          
+          Weapon.Desc %in% c("MACE/PEPPER SPRAY","STUN GUN","BLACKJACK","MARTIAL ARTS WEAPONS")~"Arme de défense",
+          
+          TRUE~"NA")))
+
+crimesLA$TypeAgression[crimesLA$TypeAgression=="NA"]<-NA
+
+
+```
+
+### Reclassification Ethnies
+
+On passe de 18 modalités à 5 en fonction des grands groupes ethniques : Blanc, Asiatique, AfroAmericain, Hispanique et Autre (trop complexe à reclassifier)
+
+```{r}
+crimesLA = crimesLA %>% mutate(Ethnie = case_when(Vict.Descent %in% c("W")~"Blanc",
+                                                  Vict.Descent %in% c("A","C","D","G","J",
+                                                                      "K","L","V","Z")~"Asiatique",
+                                                  Vict.Descent %in% c("B")~"AfroAmericain",
+                                                  Vict.Descent %in% c("H")~"Hispanique",
+                                                  Vict.Descent %in% c("I","O","P","S","U","X")~"Autre",
+                                                  TRUE~"NA"))
+crimesLA$Ethnie[crimesLA$Ethnie=="NA"]<-NA
+```
+
+### Reclassification des crimes
+
+Les crimes sont reclassés selon les catégories présentées dans l'UCR compastat de la LAPD. Certains crimes présents dans la base ne sont pas référencés dans l'UCR compastat, ils seront donc supprimés. 
+
+```{r}
+
+crimesLA$R_crim <- NA
+crimesLA$R_crim[crimesLA$Crm.Cd %in% c("110", "113")] <- "Homicide"
+crimesLA$R_crim[crimesLA$Crm.Cd %in% c("121", "122", "815", "820", "821")] <- "Viol"
+crimesLA$R_crim[crimesLA$Crm.Cd %in% c("210", "220")] <- "Braquage"
+crimesLA$R_crim[crimesLA$Crm.Cd %in% c("230", "231", "235", "236", "250", "251", "761", "926", "435", "436", "437", "622", "623", "624", "625", "626", "627", "647", "763", "928", "930")] <- "Agression"
+crimesLA$R_crim[crimesLA$Crm.Cd %in% c("310", "320")] <- "Cambriolage"
+crimesLA$R_crim[crimesLA$Crm.Cd %in% c("330", "331", "410", "510", "520", "433", "420", "421", "350", "351", "352", "353", "450", "451", "452", "453", "341", "343", "345", "440", "441", "442", "443", "444", "445", "470", "471", 
+                                       "472", "473", "474", "475", "480", "485", "487", "491")] <- "Vol"
+
+crimesLA$R_crim_b <- NA
+crimesLA$R_crim_b[crimesLA$R_crim %in% c("Homicide", "Viol", "Braquage", "Agression")] <- "Crime violent"
+crimesLA$R_crim_b[crimesLA$R_crim %in% c("Cambriolage", "Vol")] <- "Crimes contre les biens"
+```
+
+
+### Formatage date
+
+On va également formater la date pour qu'elle puisse être prise en compte par le package 'lubridate'. Sans cela, le champ "TIME.OCC" est inutilisable
+
+```{r}
+
+crimesLA$TIME.OCC= as.character(crimesLA$TIME.OCC)
+
+crimesLA = crimesLA %>% mutate(nbchar = (nchar(TIME.OCC)))
+
+crimesLA = crimesLA %>% mutate(Heure1=(case_when(nbchar==1~"000",nbchar==2~"00",nbchar==3~"0",nbchar==4~"")))
+
+crimesLA = crimesLA %>% mutate(Heure2 = "00")
+
+crimesLA = crimesLA %>% unite("Heure3",Heure1,TIME.OCC,sep = "")
+
+crimesLA = crimesLA %>% mutate(Sub1=(substr(Heure3,1,2))) %>% mutate(Sub2 = (substr(Heure3,3,4)))
+
+crimesLA = crimesLA %>% unite("HeureOK",Sub1,Sub2,Heure2,sep = ":")
+
+crimesLA = crimesLA %>% separate(col = DATE.OCC,into =c("Date"),sep = " ")
+
+crimesLA = crimesLA %>% unite("DateOK",Date,HeureOK,sep= " ")
+
+crimesLA$DateOK = mdy_hms(crimesLA$DateOK)
+
+crimesLA=crimesLA %>% filter(year(DateOK) != "2021")
+# On retire l'année 2021 car elle n'est pas finie au moment de l'étude
+
+```
+
+
+### Ajout de variables Annee, Mois, Jour et Heure pour l'analyse du temps
+
+On rajoute les colonnes qui renseignent sur les différentes temporalités (mois, année,...)
+
+```{r}
+
+crimesLA = crimesLA  %>% mutate(Annee= year(DateOK))
+crimesLA = crimesLA  %>% mutate(Mois= months(DateOK,abbr=FALSE))
+crimesLA = crimesLA  %>% mutate(Jour= wday(DateOK, label=TRUE, abbr = F))
+crimesLA = crimesLA  %>% mutate(Heure= hour(DateOK))
+
+
+```
+
+
+### Suppression champs inutiles
+
+```{r}
+
+crimesLA <- crimesLA %>% select(! c("Heure3", "nbchar", "Vict.Descent", "Weapon.Desc", "Crm.Cd", "Crm.Cd.Desc"))
+
+```
+
+### Suppression des lignes vides
+
+On retire les lignes possédants des "NA" afin d'être le plus exhaustif possible et d'avoir un jeu de données le plus complet possible
+
+```{r}
+
+crimesLA<-crimesLA %>% filter(is.na(TypeAgression)!=TRUE)
+crimesLA<-crimesLA %>% filter(is.na(Vict.Sex)!=TRUE)
+crimesLA<-crimesLA %>% filter(is.na(Ethnie)!=TRUE)
+crimesLA<-crimesLA %>% filter(is.na(R_crim)!=TRUE)
+
+#crime qui n'ont pas de position geographique
+crimesLA<-crimesLA %>% filter(! (LAT == "0" & LON=="0"))
+
+```
+
+
+# Analyse graphique
+## Analyse sur le temps
+
+On va dans un premier temps faire des analyses sur le temporalité
+
+### Graphique du nombre de crimes par an
+
+Malheureusement, il y a trop de différences entres les années pour statuer sur une réelle tendance de la criminalité à Los Angeles. Cela peut venir du jeu de donnée en lui même qui est moins renseigné sur les années 2013,2019. 2020 peut s'expliquer avec l'apparition du Covid, qui a diminué les interactions sociales et donc les potentiels crimes
+```{r}
+crimesLA$Annee = as.character(crimesLA$Annee)
+
+CrimesHeure = crimesLA %>% group_by(Annee) %>% summarise(nb = n())%>% arrange(desc(nb))
+
+GraphAnnee = ggplot(CrimesHeure, aes(x=Annee, y=nb,fill=Annee))+
+  geom_bar(stat="identity",position = "dodge")+
+  scale_fill_brewer(palette = "Set3")+
+  theme_minimal()+
+  scale_y_continuous(labels = comma)+
+  ggtitle("Nombre de crimes par année")+
+  xlab("Année")+
+  ylab("Crimes")+
+  guides(fill="none")+
+  labs(caption="Source : data.lacity.org")
+
+GraphAnnee
+```
+
+### Graphique du nombre de crimes en fonction de l'heure
+
+Ici, on peut voir que la nuit le nombre de crime reste relativement, ce qui semble logique car la population n'est pas active. Puis elle remonte pour atteindre un pic vers 18 heure qui constitue la débauche des actifs.
+```{r}
+
+CrimesHeure = crimesLA %>% group_by(Heure) %>% summarise(nb = n())%>% arrange(desc(nb))
+
+GraphHeure = ggplot(CrimesHeure, aes(x=Heure, y=nb,fill=Heure))+
+  geom_bar(stat="identity",position = "dodge")+
+  theme_minimal()+
+  scale_y_continuous(labels = comma)+
+  ggtitle("Nombre de crimes par heures")+
+  xlab("Heures")+
+  ylab("Crimes")+
+  guides(fill="none")+
+  scale_x_continuous( breaks=c(0,4,8,12,16,20))+
+  labs(caption="Source : data.lacity.org")
+
+GraphHeure
+
+```
+
+### Graphique du nombre de crimes par jour de la semaine
+
+Ici, on observe seulement un léger pic le Vendredi. Cela pourrait s'expliquer par un relachement de la population en vue de l'arrivée du week-end
+
+```{r}
+CrimesJour = crimesLA %>% group_by(Jour) %>% summarise(nb = n())%>% arrange(desc(nb))
+
+GraphJour = ggplot(CrimesJour, aes(x=Jour, y=nb,fill=Jour))+
+  geom_bar(stat="identity",position = "dodge")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Set1")+
+  scale_y_continuous(labels = comma)+
+  ggtitle("Nombre de crimes selon les jours de la semaine")+
+  xlab("Jour")+
+  ylab("Crimes")+
+  guides(fill="none")+
+  labs(caption="Source : data.lacity.org")+
+  scale_x_discrete(limits=c("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"))
+
+  
+
+GraphJour
+```
+
+### graphique du nombre de crimes par mois
+
+Ici, on aperçoit pas de tendance particulière en fonction du mois de l'année. Il y a seulement une corrélation entre le nombre de jour dans le mois et le nombre de crimes, ce qui est logique.
+
+```{r}
+CrimesMois = crimesLA %>% group_by(Mois) %>% summarise(nb = n())%>% arrange(desc(nb))
+
+GraphMois = ggplot(CrimesMois, aes(x=Mois, y=nb,fill=Mois))+
+  geom_bar(stat="identity",position = "dodge")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Set3")+
+  scale_y_continuous(labels = comma)+
+  ggtitle("Nombre de crimes selon les mois")+
+  xlab("Mois")+
+  ylab("Crimes")+
+  guides(fill="none")+
+  scale_x_discrete(limits=c("janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre",
+                            "novembre","décembre"))
+  labs(caption="Source : data.lacity.org")
+  
+
+GraphMois
+```
+### Evolution des types de crimes sur la période 
+
+Le streamgraph permet de voir l'évolution par année de chaque typologie de type de crime tout en voyant la logique globale de l'évolution du nombre de crime. On remarque que les vols et les aggressions sont les infractions les plus répandues. 
+
+```{r}
+streamgraph <- crimesLA %>% group_by(Annee , Crime=R_crim) %>% summarise(nb = n())
+streamgraph(streamgraph, key="Crime", value="nb", date="Annee", height="700px", width="1300px") %>% sg_axis_x("date") %>%  sg_legend(show=TRUE, label="I- Type: ")
+
+```
+
+## Analyse sur l'âge des victimes
+
+### Pyramide des âges
+
+La pyramide des âges nous permet de voir la distribution des différentes classes d'âges ainsi que le sexe des victimes. On remarque que les classes d'âges les plus répandues se situent entre 25 et 60 ans, aussi bien chez les hommes que chez les femmes. 
+
+```{r}
+pyra<-crimesLA %>% select(Vict.Age, Vict.Sex) %>% filter(Vict.Sex %in% c("M", "F"))
+Crime<-pyra
+
+Crime$ClasseAge<-cut(Crime$Vict.Age, breaks=c(0,10, 15, 20,25, 30, 40, 50, 60, 70, 80, 90, 100), right = FALSE, labels = FALSE)
+
+
+agebreaks <- c(0,5,10,15,20,25,30,40,50,60,70,80,90,100)
+agelabels <- c("0-5","5-10","10-15","15-20","20-25","25-30","30-40","40-50",
+               "50-60","60-70","70-80","80-90","90-100")
+Crime$ClasseAge<-cut(Crime$Vict.Age, breaks = agebreaks, right = FALSE, labels = agelabels)
+
+setDT(pyra)[ , agegroups := cut(Vict.Age, breaks = agebreaks, right = FALSE, labels = agelabels)]
+
+
+Crime2<- Crime %>% select(Vict.Sex, ClasseAge) %>% group_by(ClasseAge, Vict.Sex) %>% summarise(ctn=n(), prop = (n()/nrow(Crime))*100)
+
+Crime3<- Crime2 %>% spread(key= Vict.Sex, value = ctn)
+
+# Reformat data
+crime4<- Crime3 %>%
+  mutate(ClasseAge = factor(x = ClasseAge, levels = unique(ClasseAge))) %>%
+  gather(key = "label", value = "nombre", M, F) %>%
+  mutate(sex = factor(x = unname(c("M" = "Homme", "F" = "Femme")[label]), levels = c("Femme", "Homme")),
+    direction = c("M" = -1, "F" = 1)[label]) %>% filter(!is.na(ClasseAge)==TRUE) %>% filter(!is.na(nombre)==TRUE)
+
+cortex<-ggplot() +
+  theme_classic() +
+  geom_bar(
+    data = crime4,
+    aes(x = ClasseAge, y = prop*direction, fill = sex),
+    stat = "identity",
+    width = 0.90
+  ) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  scale_y_continuous(labels = function(x){paste0(abs(x), "%")}) +
+  scale_alpha_manual(values = c(0.2, 1)) +
+  scale_fill_discrete(drop = FALSE) +
+  labs(x = "Age", y = NULL, fill = "Sex") + ggtitle("Pyramide des âges des victimes de crimes à Los Angeles")+
+labs(caption="Source : data.lacity.org")
+
+cortex
+
+```
+
+
+### Boxplot de l'age des victimes selon la catégorie de crime
+
+Ici on s'attarde à voir s'il y a une différence d'âge entre les victimes des crimes violents (Homicide, aggression, braquage, viol) et les crimes qui concernent les biens de la propriété (cambriolage, vol). On remarque ainsi que les victimes des crimes contre les biens sont plus âgés que les victimes des crimes violents. 
+```{r}
+
+crimesLA_age<-crimesLA %>% filter(!Vict.Age==0)
+p <- ggplot(crimesLA_age, aes(x=Vict.Age, y=R_crim_b)) + 
+  geom_boxplot() + geom_boxplot(fill='#A4A4A4', color="black") + theme_classic()
+p + coord_flip() + stat_summary(fun=mean, geom="point", shape=23, size=4)  + xlab("Age") + ylab("Categorie de crime") + ggtitle("Boxplot de l'age des victimes selon la catégorie de crime à Los Angeles")+
+labs(caption="Source : data.lacity.org")
+
+
+```
+
+
+## Analyse sur le sexe des victimes
+
+
+Ici, on s'intéresse à la proportion d'hommes et de femmes victime de crimes chaques années. On souhaite vérifier si les femmes ont tendances au fil des années à être de plus en plus victimes d'agressions par rapport aux hommes. On constate donc que les 2 taux étaient le plus proches en 2012 (51.2% pour les H et 48.8% pour les femmes), puis ensuite l'écart à continué à s'accroître jusqu'à 2020.
+
+```{r}
+
+crimesLA$Annee = as.numeric(crimesLA$Annee)
+
+CrimesAgeF = crimesLA %>% filter(Vict.Sex=="F") %>% group_by(Annee) %>%summarise(nb = n()) %>% arrange(desc(Annee)) 
+
+Crimeshelp = crimesLA %>% filter(Vict.Sex=="M" | Vict.Sex=="F") %>% group_by(Annee) %>% summarise(nb = n())%>% arrange(desc(Annee))
+
+CrimesAgeF = CrimesAgeF %>% mutate(Somme = paste(Crimeshelp$nb)) %>% mutate(Sexe ="F")
+
+CrimesAgeM = crimesLA %>% filter(Vict.Sex=="M") %>% group_by(Annee) %>%summarise(nb = n()) %>% arrange(desc(Annee)) 
+
+CrimesAgeM = CrimesAgeM %>% mutate(Somme = paste(Crimeshelp$nb)) %>% mutate(Sexe ="H")
+
+CrimesSexPourcen = bind_rows(CrimesAgeF,CrimesAgeM,.id = )
+
+CrimesSexPourcen$Somme = as.numeric(CrimesSexPourcen$Somme)
+
+CrimesSexPourcen = CrimesSexPourcen %>% mutate(Pour = ((nb/Somme)*100))
+
+CrimesSexPourcen = CrimesSexPourcen[,-2:-3]
+
+CrimesSexPourcen$Annee = as.numeric(CrimesSexPourcen$Annee)
+
+
+
+GraphSex = ggplot(data = CrimesSexPourcen, aes(x = Annee, y = Pour, colour = Sexe))+
+  geom_line(size=1.5) +
+  geom_point(size=2,color="black")+
+  theme_minimal()+
+  ggtitle("Proportion de victimes hommes et de femmes par années")+
+  xlab("Année")+
+  ylab("Pourcentage")+
+  guides(fill="none")+
+  theme(legend.justification = c(0, 1),
+        text = element_text(size = 13))+
+  scale_x_continuous( breaks=c(2010,2012,2014,2016,2018,2020))+
+  labs(caption="Source : data.lacity.org")
+
+GraphSex
+
+
+```
+
+## Analyse sur les agressions
+
+Après la reclassification des types d'armes, on s'intéresse sur ces mêmes modalités et de voir lesquelles sont le plus représentées dans un diagramme circulaire.
+
+```{r}
+
+CrimesArme = crimesLA %>% filter(TypeAgression != "NA") %>% group_by(TypeAgression) %>% summarise(total = n()) %>%
+  arrange(desc(total))
+
+CrimesArme = CrimesArme %>% mutate(prop=round((total/(sum(CrimesArme$total)/100)),digits = 1))
+
+GraphArme = ggplot(CrimesArme, aes(x="", y=total,fill=TypeAgression))+
+  geom_bar(stat = "identity")+
+  coord_polar(theta = "y",start = 0)+
+  scale_fill_brewer(palette = "Set2")+
+  theme_void()+
+  scale_y_continuous(labels = comma)+
+  ggtitle("Armes utilisées pour ces crimes")+
+  labs(caption="Source : data.lacity.org")
+
+GraphArme
+```
+## Analyse des crimes
+
+Voici la répartition des types de crimes. Les vols et les aggressions sont les infractions les plus fréquemmments reportées. 
+
+```{r}
+circ.crime <- crimesLA %>% select (R_crim, R_crim_b) %>% group_by(R_crim) %>% summarise(x = n()) %>% arrange(desc(R_crim)) %>% mutate(prop=round(x/sum(x)*100,2), lab.ypos = cumsum(prop) - 0.3*prop)
+
+ggplot(circ.crime, aes(x = 2, y = prop, fill = R_crim)) +
+  geom_bar(stat = "identity", color = "white") +
+  coord_polar(theta = "y", start = 0)+
+  geom_text(aes(y = lab.ypos, label = paste(prop, "%")), color = "white")+ 
+  scale_fill_manual(values = wes_palette("BottleRocket1", n = 6)) + 
+  theme_void()+
+  xlim(0.5, 2.5) + labs(fill = "Type de crime")
+
+```
+## Analyse des crimes et des ethnies 
+
+Avec cet aluvial diagramme qui fait se rejoindre les types de crimes avec les ethnies, on remarque qu'il ne semble pas y avoir de lien entre ces deux variables. Toutes les ethnies semblent avoir la même répartition entre chaque crimes.  
+
+```{r}
+sankey <- crimesLA %>% group_by(Crime = R_crim, Ethnie) %>% summarise( nb= n())
+
+nodes <- data.frame(name=c(as.character(sankey$Crime), as.character(sankey$Ethnie)) %>% unique())
+sankey$IDsource <- match(sankey$Crime, nodes$name)-1 
+sankey$IDtarget <- match(sankey$Ethnie, nodes$name)-1
+
+sankeyNetwork(Links = sankey, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "nb", NodeID = "name", 
+              fontSize = 19, fontFamily = 'Arial', nodeWidth = 55)
+```
+
+
+# Analyse spatiale
+## Prépration des datas spatiales
+
+Pour la ville de Los Angeles, nos données nous permettent de spatialiser l'information dans 2 types d'entités
+bien distinctes : les AREA et les districts.
+Il y a 21 AREA dans la ville et 1135 districts. Mais, nous n'avons trouvé uniquement la couche des districts.
+On va donc l'aggréger pour avoir la couche des 21 quartiers car on a un champ id pour celui-ci ("PREC")
+
+```{r}
+
+SubQ = st_read("LAPD_Reporting_Districts.shp", stringsAsFactors = FALSE)
+plot(SubQ["PREC"])
+
+Q = SubQ %>% group_by(PREC) %>% summarise(nb = n())
+
+plot(Q["PREC"])
+
+CrimeGeo = crimesLA %>% filter(LAT !=0)
+CrimeGeo = st_as_sf(CrimeGeo,coords = c("LON","LAT"),crs=4326)
+plot(CrimeGeo["AREA"])
+
+Cali = st_read("ca-state-boundary/cnty19_1.shp")
+Cali = st_transform(Cali,4326)
+plot(Cali["OBJECTID"])
+```
+
+## Analyse de l'ethnie des victimes
+
+On détermine ici, quelle est l'ethnie qui a subit le plus de crimes par quartiers. Ce qui est intéressant, c'est que cette carte est représentative de la réalité spatiale de Los Angeles avec une ségrégation raciale très présente.
+
+```{r}
+
+CrimeEthni = crimesLA %>% group_by(AREA,Ethnie) %>% summarise(nb=n())
+CrimeEthniOK = CrimeEthni %>% group_by(AREA) %>% summarise(nb = max(nb))
+
+CrimeEthniOK = left_join(CrimeEthniOK,CrimeEthni,by="nb")
+
+CrimeEthniOK = CrimeEthniOK %>% mutate(PREC = paste(AREA.x))
+
+CrimeEthniOK$PREC = as.numeric(CrimeEthniOK$PREC)
+
+CrimeEthniOK = left_join(Q,CrimeEthniOK,by="PREC")
+
+CarteEthni = ggplot()+
+  geom_sf(data=Cali,aes(),fill= "antiquewhite")+
+  geom_sf(data = CrimeEthniOK,size=0.1,aes(fill=Ethnie))+
+  scale_fill_brewer(palette = "Set3")+
+  xlab("Latitude")+ylab("Longitude")+
+  annotation_scale(location = "bl", width_hint = 0.4) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0, "in"), pad_y = unit(0, "in"),
+        style = north_arrow_fancy_orienteering)+
+  theme(panel.grid.major = element_line(color = grey(0.1), linetype = "dotted", 
+        size = 0), panel.background = element_rect(fill = "aliceblue"))+
+  ggtitle("Les quartiers de Los Angeles", subtitle = "(Quelles ethnies sont les plus victimes de crimes?)")+
+  labs(caption="Source : data.lacity.org")+
+  scale_fill_discrete(name = "Origine de la victime \n la plus représentée \n par quartier", labels = c("AfroAméricaine", "Blanche","Hispanique"))+
+  coord_sf(xlim = c(-118.7,-118.1),ylim = c(33.7,34.35))
+
+CarteEthni
+
+```
+
+## Analyse sur l'âge moyen par quartiers
+
+Dans cette analyse, on met en évidence l'âge moyen des victimes par quartier afin de distinguer si ce sont des quartiers "Jeunes" ou "Vieux"
+
+```{r}
+Age = crimesLA %>% filter(Vict.Age != 0) %>%group_by(AREA) %>% summarise(mean = mean(Vict.Age))
+Age = Age %>% mutate(PREC = AREA)
+
+Age = left_join(Q,Age,by="PREC")
+
+AgeCarte = ggplot()+
+  geom_sf(data=Cali,aes(),fill= "antiquewhite")+
+  geom_sf(data = Age,size=0.1,color="#FEFBF3",aes(fill=mean))+
+  scale_fill_gradient(low = "chartreuse",high= "darkorange4")+
+  xlab("Latitude")+ylab("Longitude")+
+  annotation_scale(location = "bl", width_hint = 0.4) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0, "in"), pad_y = unit(0, "in"),
+        style = north_arrow_fancy_orienteering)+
+  theme(panel.grid.major = element_line(color = grey(0.1), linetype = "dotted", 
+        size = 0), panel.background = element_rect(fill = "aliceblue"))+
+  coord_sf(xlim = c(-118.7,-118.1),ylim = c(33.7,34.35))+
+  ggtitle("Les quartiers de Los Angeles", subtitle = "(Quelles ethnies sont les plus victimes de crimes?)")+
+  labs(fill = "Âge moyen des victimes \npar quartiers")+
+  labs(caption="Source : data.lacity.org")
+
+  
+AgeCarte
+```
+
+
+
+## Analyse sur l'évolution du nombre de crimes par quartiers
+
+On analyse ici, la moyenne mondérée du taux d'évolution de la criminalité par quartiers. On écarte volontairement 2 de ces quartiers car on avait des valeurs abérantes, du fait de notre jeu de données qui n'a probablement pas été complété avec la même exhaustivité d'années en années par la police de Los Angeles (pour certains quartiers).
+
+```{r}
+
+CrimesEvo = crimesLA %>% filter(Annee %in% c("2011","2012","2015","2016","2017","2018")) %>% group_by(AREA,Annee) %>% summarise(nb = n()) %>% arrange(desc(nb))
+
+CrimesEvo = spread(CrimesEvo,key = Annee,value = nb)
+
+CrimesEvo = CrimesEvo %>% rename(A1 = 2,A2=3,A3=4,A4=5,A5=6,A6=7)
+
+CrimesEvo = CrimesEvo %>% mutate(Tx1 = ((A2-A1)/A1)*100) 
+
+CrimesEvo = CrimesEvo %>% mutate(Tx2 = ((A3-A2)/A2)*100) 
+
+CrimesEvo = CrimesEvo %>% mutate(Tx3 = ((A4-A3)/A3)*100) 
+
+CrimesEvo = CrimesEvo %>% mutate(Tx4 = ((A5-A4)/A4)*100)
+
+CrimesEvo = CrimesEvo %>% mutate(Tx5 = ((A6-A5)/A5)*100) 
+
+CrimesEvo = CrimesEvo %>% mutate(Moyenne = (Tx1+Tx2+Tx3+Tx4+Tx5)/5)
+CrimesEvo <- CrimesEvo %>% filter(Moyenne<1000)
+CrimesEvo = CrimesEvo %>% mutate(PREC = AREA)
+
+CrimesEvo = left_join(Q,CrimesEvo,by="PREC")
+
+CarteEvo = ggplot()+
+  geom_sf(data=Cali,aes(),fill= "antiquewhite")+
+  geom_sf(data = CrimesEvo,size=0.1,color="#FEFBF3",aes(fill=Moyenne))+
+  scale_fill_gradient(low = "white",high = "red",space = "Lab")+
+  xlab("Latitude")+ylab("Longitude")+
+  annotation_scale(location = "bl", width_hint = 0.4) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0, "in"), pad_y = unit(0, "in"),
+        style = north_arrow_fancy_orienteering)+
+  theme(panel.grid.major = element_line(color = grey(0.1), linetype = "dotted", 
+        size = 0), panel.background = element_rect(fill = "aliceblue"))+
+  coord_sf(xlim = c(-118.7,-118.1),ylim = c(33.7,34.35))+
+  ggtitle("Les quartiers de Los Angeles", subtitle = "(Quelles quartiers se sont le plus criminalisés entre 2012 et 2018)")+
+  labs(fill = "Évolution de la criminalité \npar quartiers")+
+  labs(caption="Source : data.lacity.org")
+  
+CarteEvo
+
+```
+
+## Small multiple
+
+On met ici en évidence l'évolution du nombre de crimes par quartier en utilisant un small multiple pour chaque années. On retire les années 2010 2019 et 2020 car elles sont incomplètes pour tous les quartiers
+
+```{r}
+
+"%!in%" = Negate("%in%")
+
+CrimesSM = crimesLA %>% filter( Annee  %!in% c("2010","2019","2020")) %>% group_by(Annee,AREA) %>% summarise(Somme = n())
+
+CrimesSM = CrimesSM %>% mutate(PREC = AREA)
+
+CrimesSM = left_join(Q,CrimesSM,by="PREC")
+
+
+ggplot()+
+  geom_sf(data=CrimesSM,color="transparent",aes(fill=Somme))+
+  facet_wrap(~Annee,ncol = 4,dir = "h")+
+  theme(plot.title=element_text(face="bold", hjust = 0.5)) + 
+  theme(plot.subtitle=element_text(hjust = 0.5)) + 
+  theme(plot.caption=element_text(size=8, margin=margin(t=10), hjust = 0.95))+
+  scale_fill_gradient(low = "cornsilk",high= "orangered1")+
+  ggtitle("Les quartiers de Los Angeles", subtitle = "(Le nombre de crimes dans les quartiers)")+
+  labs(fill = "Nombre de victimes par \nannées par quartiers")+
+  labs(caption="Source : data.lacity.org")
+
+
+```
+
+## Classification Ascendante Hierarchique
+
+Cette classification, basée sur les variables de crime, va nous permettre de dresser une typologie du territoire angelinois, qui sera découpé en maille de 300*300m. La classification obtenue nous fait état de 6 classes (clusters). Chaque classe est composé d'un certain nombre de grilles et toutes les grilles d'une même classe ont des profils de crimes similaires. Voici ce qui caractérise chaque clusters:
+
+- Cluster 1: c'est un cluster qui est très peu criminel, avec des valeurs, pour chaque crimes, inférieures à la moyenne. Les territoires qui composent se cluster se retrouvent au Nord, à l'Est et tout au Sud de Los Angeles. 
+
+- Cluster 2: C'est un cluster où il y a le plus d'infractions recencées. On y retrouve surtout des vols et des braquages. Les territoires qui composent se cluster se retrouvent au centre de Los Angeles (où il y a beaucoup de commerces). 
+
+- Cluster 3: C'est un cluster moins criminel que la moyenne globalement, mais où l'on retrouve une recrudescence de vols. Les territoires concernés se trouvent autour du centre de LA et sur la baie au centre-ouest de Los Angeles.
+
+- Cluster 4: C'est un cluster moins criminel que la moyenne mais qui comporte certains types de crimes spécifiques. C'est dans ce cluster que l'on retrouve une grande part de viol et d'aggression. La plupart des territoires de ce cluster se situent au nord ouest et est de Los Angeles. 
+
+- Cluster 5: c'est un cluster particulier qui regroupe seulement deux territoires. Ce cluster regroupe les zones les plus dangereuses de LA, avec une part d'homicide très supérieure à la moyenne. 
+
+- Cluster 6: c'est un cluster similaire au cluster 2 et 3. 
+
+Comme le montre le graphique de l'inertie, cette CAH n'est pas très performante car elle ne represente que très peu d'inertie sur les 6 axes choisis. Cela permet tout de même d'avoir une classification grossière du territoire de Los Angeles, selon les crimes reportés. 
+
+```{r}
+#Chargement de la couche des districts
+districtLA <- st_read(dsn = "districtLA.shp", stringsAsFactors = FALSE) %>% sf::st_transform(4326) %>% sf::st_geometry()
+#On va union ce dataset des districts pour faciliter la creation d'une grille homogene. 
+districtLA<-st_union(districtLA)
+
+
+#Georef de la base des crimes
+crimesLAgeo <- st_as_sf(crimesLA, coords=c("LON","LAT"), crs=4326) 
+
+#Creation de la grille
+grid <- sf::st_make_grid(districtLA, cellsize = 0.03) %>% st_intersection(districtLA)
+
+plot(districtLA, col = "blue")
+plot(grid, add = TRUE)
+
+#creation d'un id unique pour la grille 
+grid <- sf::st_sf(grid, 'ID' = seq(length(grid)), grid)
+
+#on attribue l'id de la grille aux donnees du crime
+grid_CAH1 <- crimesLAgeo %>% st_join(grid) %>% group_by(ID)
+#transformation en dataframe pour la CAH
+grid_CAH<-as.data.frame(grid_CAH1)
+#######################################CREATION DES VARIABLES DE LA CAH 
+
+dfCAH<-grid_CAH %>% group_by(ID) %>% summarise(Nb_crime = n(), Age_moyen = mean(Vict.Age))
+dfCAH<-dfCAH %>% filter(is.na(ID)!=TRUE )
+
+
+ethnie <- grid_CAH %>% count(Ethnie, ID) %>% spread(key=Ethnie, value=n)
+ethnie<- ethnie %>% select(! Autre) 
+ethnie[is.na(ethnie)] <- 0
+
+Crime<-grid_CAH %>% count(R_crim, ID) %>% spread(key=R_crim, value=n)
+Crime[is.na(Crime)] <- 0
+
+
+dfCAH <- left_join(dfCAH, ethnie, by= "ID")
+dfCAH <- left_join(dfCAH, Crime, by= "ID")
+
+#Calcul prop
+#Ethnie
+dfCAH$Blanc<-dfCAH$Blanc/dfCAH$Nb_crime*100
+dfCAH$AfroAmericain<-dfCAH$AfroAmericain/dfCAH$Nb_crime*100
+dfCAH$Asiatique<-dfCAH$Asiatique/dfCAH$Nb_crime*100
+dfCAH$Hispanique<-dfCAH$Hispanique/dfCAH$Nb_crime*100
+#Type crime
+dfCAH$Agression<-dfCAH$Agression/dfCAH$Nb_crime*100
+dfCAH$Cambriolage<-dfCAH$Cambriolage/dfCAH$Nb_crime*100
+dfCAH$Braquage<-dfCAH$Braquage/dfCAH$Nb_crime*100
+dfCAH$Viol<-dfCAH$Viol/dfCAH$Nb_crime*100
+dfCAH$Homicide<-dfCAH$Homicide/dfCAH$Nb_crime*100
+dfCAH$Vol<-dfCAH$Vol/dfCAH$Nb_crime*100
+
+
+dfCAH_CR <- data.frame(dfCAH[, c("Nb_crime", "Age_moyen", "Agression","Braquage","Cambriolage","Homicide","Viol","Vol")])
+dfCAH_CR <- scale(dfCAH)
+
+#CAH
+
+CAH <- agnes(dfCAH_CR,
+                 metric = "euclidean",
+                 method = "ward")
+sortedHeight<- sort(CAH$height,decreasing= TRUE)
+relHeight<-sortedHeight/ sum(sortedHeight)*100
+
+barplot(relHeight[1:30],names.arg=seq(1, 30, 1),col= "black",border= "white",xlab= "Noeuds",ylab= "Part de l'inertie totale (%)")
+
+
+clus <- cutree(CAH, k = 6)
+LACluster <- as.data.frame(dfCAH)
+LACluster$CLUSCRIME <- factor(clus,
+                               levels = 1:6,
+                               labels = paste("Classe", 1:6))
+
+Recap<- LACluster %>% group_by(CLUSCRIME) %>% 
+  summarise(NB= n(), Nb_crime = mean(Nb_crime), Agemoyen = mean(Age_moyen), 
+           Agression = mean(Agression), Braquage = mean(Braquage), Cambriolage=mean(Cambriolage), Homicide = mean(Homicide),  Viol = mean(Viol), Vol = mean(Vol))
+
+
+
+SyntheseCAH <- Recap %>% mutate(
+  Nb_crime_m = mean(dfCAH$Nb_crime),
+  Agemoyen_m = mean(dfCAH$Age_moyen),
+  Agression_m = mean(dfCAH$Agression),
+  Braquage_m = mean(dfCAH$Braquage),
+  Cambriolage_m = mean(dfCAH$Cambriolage),
+  Homicide_m = mean(dfCAH$Homicide),
+  Viol_m = mean(dfCAH$Viol),
+  Vol_m = mean(dfCAH$Vol),
+  Crime_=(Nb_crime- Nb_crime_m)/Nb_crime_m*100,
+  Age_=(Agemoyen- Agemoyen_m)/Agemoyen_m*100,
+  Aggression_=(Agression- Agression_m)/Agression_m*100,
+  Braquage_=(Braquage- Braquage_m)/Braquage_m*100,
+  Homicide_=(Homicide- Homicide_m)/Homicide_m*100,
+  Viol_=(Viol- Viol_m)/Viol_m*100,
+  vol_=(Vol- Vol_m)/Vol_m*100)
+
+SyntheseCAH <- data.frame(SyntheseCAH[, c("CLUSCRIME", "Crime_", "Age_", "Aggression_", "Braquage_", "Homicide_", "Viol_", "vol_")])
+
+gather <- SyntheseCAH %>% gather(key=variable, value= "value", Crime_:vol_)
+
+ggplot(gather, aes(x=variable, y=value, fill=CLUSCRIME)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values=c("#416979","#f9c155","#39a699","#FF4136","#FF851B", "#1f78b4")) +
+  ylab("Variation par rapport à la moyenne globale par carreau (%)") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~CLUSCRIME, ncol = 1)
+
+LACAH <- left_join(grid, LACluster, by= "ID")
+
+
+par(mar=c(0,0,1.2,0))
+
+typoLayer(
+  x = LACAH,
+  var="CLUSCRIME",
+  col = c("#416979","#f9c155","#39a699","#FF4136","#FF851B", "#1f78b4"),
+  lwd = 0.1,
+  border = "white",
+  legend.values.order = c("Classe 1",
+                          "Classe 2",
+                          "Classe 3",
+                          "Classe 4",
+                          "Classe 5",
+                          "Classe 6"),
+  legend.pos = "bottomleft",
+  legend.title.txt = "Cluster des crimes")
+
+layoutLayer(title = "Cluster par type de crime entre 2010 et 2020", 
+            author = "Sources : LAPD - Typologie obtenue par CAH", 
+            scale = 5, frame = TRUE, col = "#cdd2d4", coltitle = "#8A5543", 
+            north(pos = "topleft"), tabtitle=TRUE, horiz = FALSE)    
+
+```
+
+# Conclusion sur le dataset
+
+En dehors du fait qu'il y ait quelques problèmes d'exhaustivités selon les années (notamment 2013 qui présente 4 fois moins de crimes que 2017), nous avons pu dégager certaines logiques sociales et spatiales sur la ville de Los Angeles et sa population en partant de cet angle sur la criminalité. En ce qui nous concerne, le plus long a été de reformater et de préparer le jeu de données qui n'était à la base pas du tout propice à son exploitation. Pour certains graphiques, la mise en forme a été complexe. Mais dans l'ensemble nous avons apprécié analyser ce dataset original que l'on a pas souvent l'habitude de voir. Enfin, le langage R avec tidyverse facilite vraiment la manipulation de ces données et c'est un package sans lequel il sera quasi impossible d'utiliser R par la suite car il rend l'usage de R simple et agréable
+
+Par :
+Xavier Cledat-Bours
+Pierre-Marie Le Grand
+Thomas Peltier
