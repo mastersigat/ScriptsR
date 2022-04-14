@@ -1,0 +1,690 @@
+---
+title: "Une analyse des trajets en taxis à New York avec R"
+date: "10 janvier 2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+### Pierre Corbin / Charlie Deshayes / Elyott Tigier 
+
+##### Master 2 SIGAT 
+
+```{r}
+setwd("C:/Users/21701140/Desktop/ScriptR_Pierre_Elyott_Charlie/ScriptR_Pierre_Elyott_Charlie")
+```
+* Changer le répertoire de travail
+
+## Chargement des librairies
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(sf)
+library(cluster)
+library(cartography)
+library(scales)
+library(treemap)
+```
+
+## Import des données
+
+```{r}
+taxis <- read.csv("yellow_tripdata_2021-07.csv")
+```
+
+## Import des données géographiques
+
+```{r}
+taxis_zones <- st_read(dsn = "C:/Users/21701140/Desktop/ScriptR_Pierre_Elyott_Charlie/ScriptR_Pierre_Elyott_Charlie/taxi_zones/taxi_zones.shp", stringsAsFactors = FALSE)
+```
+Penser à redéfinir le chemin d'accès 
+
+## Visualisation des données géographiques catégorisé par quartier
+
+```{r}
+plot(taxis_zones["borough"])
+
+```
+
+
+# Préparation des données : 
+
+## Renommer les colonnes 
+```{r}
+taxis <- taxis %>% select(
+  fournisseur = VendorID,
+  depart = tpep_pickup_datetime,
+  arrivee = tpep_dropoff_datetime,
+  nb_passagers = passenger_count,
+  distance = trip_distance,
+  tarif = RatecodeID,
+  zone_depart = PULocationID,
+  zone_arrivee = DOLocationID,
+  paiement = payment_type,
+  montant_compteur = fare_amount,
+  pourboire = tip_amount,
+  montant_total = total_amount,
+  type_envoi = store_and_fwd_flag)
+```
+On ne garde pas *"store_and_fwd_flag"*, *"improvement_surcharge"*, *"congestion_surcharge"*, *"extra"*, *"mta_tax"*, *"tolls_amount"*
+
+# Reclassement de la colonne du type de paiement
+
+```{r}
+taxis <- taxis %>% mutate(paiement = case_when((paiement == 1) ~ "Carte",
+                                           	(paiement == 2) ~ "Espèce",
+                                           	(paiement == 3) ~ "Gratuit",
+                                           	(paiement == 4) ~ "Litige",
+                                           	(paiement == 5) ~ "Inconnu",
+                                           	(paiement == 6) ~ "Annulation"))
+```
+
+# Transformation de l'unité de la distance parcourue de miles à kilomètres
+```{r}
+taxis <- taxis %>% mutate(dist_km = distance*1.60934)
+```
+
+```{r}
+taxis <- taxis %>% select(-distance)
+```
+
+# Sélection et renommage des variables du fichier de forme
+```{r}
+taxis_zones <- taxis_zones %>% select(
+  ID_zone = LocationID,
+  zone,
+  quartier = borough,
+  surface = Shape_Area,
+  geometrie = geometry, )
+```
+On ne garde pas *"OBJECTID"*, *"Shape_leng"*
+
+# Suppression des dates de départ non comprise dans le mois de juillet
+```{r}
+taxis <- taxis %>% filter(grepl('2021-07',depart))
+```
+
+# Suppression des lignes avec des des valeurs manquantes
+```{r}
+taxis[taxis==""] <- NA
+```
+
+# Pour supprimer les valeurs manquantes:
+```{r}
+taxis <- taxis %>% na.omit()
+```
+On a environ **130 000** lignes qui possèdent au moins un "Not Available"
+
+# Suppression des valeurs aberrantes
+```{r}
+summary(taxis)
+```
+
+```{r}
+quantile(taxis$dist_km, 0.999)
+```
+
+```{r}
+ggplot(taxis, aes(x=dist_km)) + geom_histogram(bins = 100) + xlim(0,50) + ylim(0,10000)
+```
+
+```{r}
+taxis <- taxis %>% filter(dist_km < 50, montant_total >= 0)
+```
+
+# Enrichissement du jeu de données à plat
+
+## Ajout de l'information sur le jour de la semaine, le jour du mois et l'heure dans le jeu de données avec la fonction wday, day et hour
+```{r}
+taxis <- taxis %>% mutate(jour_semaine = wday(depart, label = TRUE, abbr = FALSE), jour_mois = day(depart), heure = hour(depart))
+```
+
+## Ajout de l'information sur la période de la semaine (semaine ou le week-end)
+```{r}
+taxis$sem_we <- ifelse(taxis$jour_semaine == "samedi" | taxis$jour_semaine == "dimanche", "Week-end", "Semaine")
+```
+
+## Ajout de l'information sur la période la journée
+```{r}
+taxis <- taxis %>% mutate(periode_jour = case_when((heure < 6) ~ "Nuit",
+                                               	(heure >= 6) & (12 > heure) ~ "Matin",
+                                               	(heure >= 12) & (18 > heure) ~ "Après-midi",
+                                               	(heure >= 18) ~ "Soir"))
+```
+
+## Ajout de la durée du trajet
+```{r}
+taxis$depart <- as_datetime(taxis$depart)
+```
+
+```{r}
+taxis$arrivee <- as_datetime(taxis$arrivee)
+```
+
+```{r}
+taxis$duree <- taxis$arrivee-taxis$depart
+```
+
+## Suppression des valeurs de durée aberrantes
+```{r}
+ggplot(taxis, aes(x=duree)) + geom_histogram(bins = 100) + xlim(0,80000)
+```
+
+```{r}
+quantile(taxis$duree, 0.99)
+```
+
+```{r}
+taxis <- taxis %>% filter(duree >= 0, duree < 30000)
+```
+
+
+# Graphiques
+
+## Part des types de paiement utilisés
+```{r}
+type_paiement <- taxis %>% group_by(paiement) %>% summarise(nb = n())
+type_paiement$fraction = type_paiement$nb /sum(type_paiement$nb)
+type_paiement$ymax = cumsum(type_paiement$fraction)
+type_paiement$ymin = c(0, head(type_paiement$ymax, n=-1))
+
+ggplot(type_paiement, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=paiement)) +
+  geom_rect() + scale_fill_brewer(palette = "Paired") + coord_polar(theta="y") + xlim(c(2, 4))
+```
+## Nombre de trajets au cours de la journée
+```{r}
+diff_semaine_weekend <- taxis %>% group_by(periode_jour, sem_we) %>% summarise(nb_trajet = n())
+```
+
+### Changement de l'ordre des périodes de la journée
+```{r}
+diff_semaine_weekend$periode_jour <- factor(diff_semaine_weekend$periode_jour, levels = c("Matin", "Après-midi", "Soir", "Nuit"))
+```
+
+### Création du graphique
+```{r}
+ggplot(diff_semaine_weekend) + geom_col(aes(x=periode_jour, y=nb_trajet, fill=periode_jour), show.legend = FALSE) +
+scale_fill_brewer(palette="RdGy") + 
+scale_y_continuous(labels=function(x) format(x, big.mark = " ", scientific = FALSE)) + 
+labs(x = "Periode de la journée", y = "Nombre de trajets", title ="Nombre de trajets au cours de la journée", subtitle = "Comparaison entre la semaine et le week-end", caption = "Source : nyc.gov") + 
+facet_wrap(~sem_we)
+```
+
+## Nombre de trajets par journée
+```{r}
+nb_jour <- taxis %>% group_by(jour_semaine) %>% summarise(nb_trajet = n())
+```
+
+### Changement de l'ordre des journée
+```{r}
+nb_jour$jour_semaine <- factor(nb_jour$jour_semaine, levels = c("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"))
+```
+
+### Création du graphique
+```{r}
+ggplot(nb_jour) + 
+  geom_col(aes(x=jour_semaine, y=nb_trajet, fill=jour_semaine), show.legend=FALSE) + 
+  theme_light() +
+  scale_fill_brewer(palette="Set2") + 
+  scale_y_continuous(labels=function(x) format(x, big.mark = " ", scientific = FALSE)) + 
+  labs(x = "Jour de la semaine", y = "Nombre de trajets") +
+  labs(title ="Nombre de trajets par jour de la semaine") +
+  labs(caption = "Source : nyc.gov")
+```
+
+## Nombre de trajets par journée sur le mois
+```{r}
+nb_jour_mois <- taxis %>% group_by(jour_mois, jour_semaine) %>% summarise(nb_trajet = n())
+```
+
+### Changement de l'ordre des journée
+```{r}
+nb_jour_mois$jour_semaine <- factor(nb_jour_mois$jour_semaine, levels = c("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"))
+```
+
+### Création du graphique
+```{r}
+ggplot(nb_jour_mois) + 
+  geom_col(aes(x=jour_mois, y=nb_trajet, fill=jour_semaine)) + 
+  theme_light() +
+  scale_fill_brewer(palette="Set2") +
+  scale_y_continuous(labels=function(x) format(x, big.mark = " ", scientific = FALSE)) +
+  labs(x = "Jour de juillet 2021", y = "Nombre de trajets") +
+  labs(title ="Nombre de trajets par jour du mois de juillet 2021") +
+  labs(caption = "Source : nyc.gov") +
+  labs(fill="Jour de la semaine")
+```
+
+## Evolution du nombre de trajets par jour et par heure 
+
+### Tableau récapitulatif
+```{r}
+HeureJournee<- taxis %>% group_by(jour_semaine, Heure=heure) %>% summarise(NbTrajet=n())
+```
+
+### Changement de l'ordre des journées
+```{r}
+HeureJournee$jour_semaine <- factor(HeureJournee$jour_semaine ,levels = c("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"))
+```
+
+### Création du graphique 
+```{r}
+ggplot(HeureJournee) + geom_col(aes(x = Heure, y = NbTrajet, fill=jour_semaine)) + 
+  scale_fill_brewer(palette="Dark2") + 
+  theme_bw() + 
+  facet_wrap(~jour_semaine, nrow =2 ) +
+  theme(legend.position = "none") +
+  labs(title = "Fréquention des taxis par jour de la semaine", subtitle = "Nombre de trajets par heure") + labs(caption = "Source : nyc.gov") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10))
+
+```
+
+## Nombre de trajets en fonction de la durée
+```{r}
+taxis <- taxis %>% mutate(duree_quali = case_when(duree < 300 ~ "Moins de 5 min",
+                                                  duree > 300 & duree < 600 ~ "Entre 5 et 10 min",
+                                                  duree > 600 & duree < 900 ~ "Entre 10 et 15 min",
+                                                  duree > 900 & duree < 1800 ~ "Entre 15 et 30 min",
+                                                  duree > 1800 & duree < 3600 ~ "Entre 30 min et 1 heure",
+                                                  duree > 3600 ~ "Plus d 1 heure"))
+
+nb_duree <- taxis %>% group_by(duree_quali) %>% summarise(nb_trajet = n())
+```
+
+### Création de la treemap
+```{r}
+treemap(nb_duree, index=c("duree_quali"),vSize="nb_trajet", type="index",
+    title = "Distribution du nombre de trajets en fonction de la durée",
+    fontsize.labels=c(15,12),                
+    fontcolor.labels=c("white","orange"),    
+    fontface.labels=c(2,1),                  
+    bg.labels=c("transparent"),              
+    align.labels=list(
+        c("center", "center"), 
+        c("right", "bottom")),                                   
+    overlap.labels=0.5)
+```
+
+# Cartographies
+
+# Départs en taxis
+
+## Création du tableau récapitulatif
+```{r}
+nb_depart_zone <- taxis %>% group_by(zone_depart) %>% summarise(nb_trajet = n())
+```
+
+## Jointure attributaire
+```{r}
+zone_nb_depart <- merge(taxis_zones,nb_depart_zone, by.x= "ID_zone", by.y="zone_depart")
+```
+
+## Création de la carte
+
+```{r}
+plot(st_geometry(zone_nb_depart), 
+    col = "lightblue4", 
+    border = "lightblue3", 
+    bg = "white") 
+
+propSymbolsLayer(
+    x = zone_nb_depart, 
+    var = "nb_trajet", 
+    inches = 0.1,
+    symbols = "circle", col =  "yellow",
+    legend.pos = "right", border = "black",
+    legend.title.txt = "Nombre de départs",
+    legend.style = "e")
+layoutLayer(title = "Départs en taxis en juillet dans les zones de New-York",
+        	author = "Sources : nyc.gov",
+        	scale = 20, frame = TRUE, col = "#cdd2d4", coltitle = "#8A5543",
+        	north(pos = "topleft"), tabtitle=TRUE, horiz = FALSE)
+```
+
+# Pourboire par zones
+
+## Création du tableau récapitulatif 
+```{r}
+pourboire <- taxis %>% group_by(zone_depart) %>% summarise (pourboire_moy=mean(pourboire))
+```
+
+## Jointure attributaire
+```{r}
+pourboireok <- merge(taxis_zones,pourboire, by.x = "ID_zone", by.y ="zone_depart")
+```
+
+## Création de la carte
+```{r}
+plot(st_geometry(taxis_zones),
+	col = "black",
+	border = "grey70",
+	bg = "white")
+propSymbolsLayer(
+	x = pourboireok,
+	var = "pourboire_moy",
+	inches = 0.08,
+	symbols = "circle", col =  "orange",
+	legend.pos = "topleft", border = "black",
+	legend.title.txt = "Pourboire moyen (en dollars)",
+	legend.style = "e")
+layoutLayer(title = "Pourboire moyen par zones",
+   		 author = "Sources : nyc.gov",
+   		 scale = 10, frame = TRUE, col = "#cdd2d4", coltitle = "#8A5543",
+   		 north(pos = "right"), tabtitle=TRUE, horiz = FALSE)
+
+
+```
+
+# Carte montrant le coûts du kilomètre par zone
+
+## Création du tableau récapitulatif
+```{r}
+Prixkm <- taxis %>% group_by (zone_arrivee) %>% summarise (MontantMoy = mean(montant_compteur), DistMoy = mean(dist_km))
+```
+
+## Calcul du coûts
+```{r}
+Prixkm <- Prixkm %>% mutate (Coutskm = MontantMoy/DistMoy)
+```
+
+## Jointure attributaire
+```{r}
+Prixkmok <- merge (taxis_zones, Prixkm, by.x = "ID_zone", by.y = "zone_arrivee")
+```
+
+## Création de la carte 
+```{r}
+plot(st_geometry(Prixkmok), col = "grey90", border = "black", lwd = 0.1)
+
+choroLayer(x = Prixkmok, var = "Coutskm", border = NA,
+           col = carto.pal("turquoise.pal", 5), legend.pos = "left",
+           add = TRUE, method = "quantile", nclass = 5,
+           legend.values.rnd = 1,legend.title.txt = "Prix moyen du kilomètre parcouru")
+           
+layoutLayer(title = "Zones où le kilomètre parcouru en taxi est le plus cher",
+        	author = "Sources : nyc.gov",
+        	scale = 20, frame = TRUE, col = "#cdd2d4", coltitle = "#8A5543",
+        	north(pos = "topleft"), tabtitle=TRUE, horiz = FALSE)
+```
+
+Il semble important de préciser que le montant compteur des taxis est fonction du temps passé et non pas de la distance parcouru. Cependant, le ratio montant/distance permet de mettre en évidence les zones où le temps passé en taxi est conséquent et donc les zones de congestion. 
+
+# Classification ascendante hiérarchique 
+
+## On duplique le jeu de données "taxis_zones" pour avoir un jeu de données "départ" et un jeu de données "arrivée" pour effectuer les CAH
+```{r}
+taxis_zones_depart <- taxis_zones %>% select(ID_zone_dep = ID_zone, zone_dep = zone, quartier_dep = quartier, surface_dep = surface, geometrie_dep = geometrie)
+```
+
+```{r}
+taxis_zones_arrivee <- taxis_zones %>% select(ID_zone_arr = ID_zone, zone_arr = zone, quartier_arr = quartier, surface_arr = surface, geometrie_arr = geometrie)
+```
+
+## Zones de départ
+```{r}
+taxis_cah_depart <- taxis %>% group_by(zone_depart) %>% summarise(
+        	nb_trajets = n(),
+        	passagers_moyen = mean(nb_passagers),
+        	distance_moyenne = mean(dist_km),
+        	montant_moyen = mean(montant_total))
+```
+
+```{r}
+taxis_cah_OK_depart <- data.frame(taxis_cah_depart[, c("nb_trajets", "passagers_moyen", "distance_moyenne", "montant_moyen")])
+```
+
+### Centrage et réduction des données
+```{r}
+taxis_cah_scale_depart <- scale(taxis_cah_OK_depart)
+```
+
+```{r}
+taxis_cah_fait_depart <- agnes(taxis_cah_scale_depart,
+             	metric = "euclidean",
+             	method = "ward")
+```
+
+```{r}
+plot(taxis_cah_fait_depart)
+```
+
+### Affichage du graphique des gains d'inertie inter-classe
+```{r}
+sortedHeight_depart<- sort(taxis_cah_fait_depart$height, decreasing= TRUE)
+```
+
+```{r}
+relHeight_depart<-sortedHeight_depart/ sum(sortedHeight_depart)*100
+```
+
+```{r}
+barplot(relHeight_depart[1:30],names.arg=seq(1, 30, 1), col= "black", border= "white", xlab= "Noeuds",ylab= "Part de l'inertie totale (%)")
+```
+
+```{r}
+clus_zones_depart <- cutree(taxis_cah_fait_depart, k = 4)
+```
+
+```{r}
+zones_cluster_depart <- as.data.frame(taxis_cah_depart)
+```
+
+```{r}
+zones_cluster_depart$clus <- factor(clus_zones_depart,
+                	levels = 1:4,
+                	labels = paste("Classe", 1:4))
+```
+
+```{r}
+zones_cluster_depart <- zones_cluster_depart %>% select (ID_zone_dep = zone_depart, nb_trajets, passagers_moyen, distance_moyenne, montant_moyen, clus)
+```
+
+### Création d'un tableau récapitulatif des classes 
+```{r}
+recap_clus_zones_depart <- zones_cluster_depart %>% group_by(clus) %>%
+                                  	summarise(nb_trajets_moy = mean(nb_trajets),
+                                            	passagers_moyen = mean(passagers_moyen),
+                                            	distance_moyenne = mean(distance_moyenne),
+                                            	montant_moyen = mean(montant_moyen))
+```
+
+```{r}
+synthese_cah_taxis_depart <- recap_clus_zones_depart %>% mutate(
+  NB_TRAJETS_MOY = mean(taxis_cah_OK_depart$nb_trajets),
+  PASSAGERSMOY = mean(taxis_cah_OK_depart$passagers_moyen),
+  DISTANCEMOY = mean(taxis_cah_OK_depart$distance_moyenne),
+  MONTANTMOY = mean(taxis_cah_OK_depart$montant_moyen),
+  nb_trajets = (nb_trajets_moy - NB_TRAJETS_MOY)/NB_TRAJETS_MOY*100,
+  passagers = (passagers_moyen - PASSAGERSMOY)/PASSAGERSMOY*100,
+  distance = (distance_moyenne - DISTANCEMOY)/DISTANCEMOY*100,
+  montant = (montant_moyen - MONTANTMOY)/MONTANTMOY*100)
+```
+
+```{r}
+synthese_cah_taxis_OK_depart <- data.frame(synthese_cah_taxis_depart[, c("clus", "nb_trajets", "passagers", "distance", "montant")])
+```
+
+```{r}
+gather_depart <- synthese_cah_taxis_OK_depart %>% gather(key=variable, value= "value", nb_trajets:montant)
+```
+
+```{r}
+ggplot(gather_depart, aes(x=variable, y=value, fill=clus)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values=c("#416979","#f9c155","#39a699","#FF4136","#FF851B", "#1f78b4")) +
+  ylab("Variation par rapport à la moyenne new-yorkaise (%)") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~clus, ncol = 1)
+```
+**Classe 1** : Peu de départs et trajets longs et chers\n
+**Classe 2** : Peu de départs et trajets courts avec moins de passagers en moyenne\n
+**Classe 3** : Peu de départs et trajets courts avec plus de passagers en moyenne\n
+**Classe 4** : Beaucoup de départs et trajets courts, peu cher et avec plus de passagers en moyenne\n
+
+### Jointure du résultat de la typologie dans la couche des zones de départ 
+```{r}
+zones_trajets_cah_depart <- merge(taxis_zones_depart, zones_cluster_depart, by = "ID_zone_dep")
+```
+
+### Création de la carte
+```{r}
+par(mar=c(0,0,1.2,0))
+```
+
+```{r}
+typoLayer(
+  x = zones_trajets_cah_depart,
+  var="clus",
+  col = c("#416979","#f9c155","#39a699","#FF4136","#FF851B", "#1f78b4"),
+  lwd = 0.1,
+  border = "white",
+  legend.values.order = c("Classe 1",
+                      	"Classe 2",
+                      	"Classe 3",
+                      	"Classe 4"),
+  legend.pos = "topleft",
+  legend.title.txt = "Zones de \ndéparts de taxis",
+  legend.nodata = "Aucun départ")
+
+layoutLayer(title = "Typologie des zones de départs de trajets en taxi en juillet 2021",
+        	author = "Sources : nyc.gov - Typologie obtenue par CAH",
+        	scale = 5, frame = TRUE, col = "#cdd2d4", coltitle = "#8A5543",
+        	north(pos = "topleft"), tabtitle=TRUE, horiz = FALSE)
+```
+
+## Zones d'arrivée
+```{r}
+taxis_cah_arrivee <- taxis %>% group_by(zone_arrivee) %>% summarise(
+  nb_trajets = n(),
+  passagers_moyen = mean(nb_passagers),
+  distance_moyenne = mean(dist_km),
+  montant_moyen = mean(montant_total))
+```
+
+```{r}
+taxis_cah_OK_arrivee <- data.frame(taxis_cah_arrivee[, c("nb_trajets", "passagers_moyen", "distance_moyenne", "montant_moyen")])
+```
+
+### Centrage et réduction des données 
+```{r}
+taxis_cah_scale_arrivee <- scale(taxis_cah_OK_arrivee)
+```
+
+```{r}
+taxis_cah_fait_arrivee <- agnes(taxis_cah_scale_arrivee,
+                    	metric = "euclidean",
+                    	method = "ward")
+```
+
+```{r}
+plot(taxis_cah_fait_arrivee)
+```
+
+### Affichage du graphique des gains d'inertie inter-classe 
+```{r}
+sortedHeight_arrivee<- sort(taxis_cah_fait_arrivee$height, decreasing= TRUE)
+```
+
+```{r}
+relHeight_arrivee<-sortedHeight_arrivee/ sum(sortedHeight_arrivee)*100
+```
+
+```{r}
+barplot(relHeight_arrivee[1:30], names.arg=seq(1, 30, 1), col= "black", border= "white", xlab= "Noeuds",ylab= "Part de l'inertie totale (%)")
+```
+
+```{r}
+clus_zones_arrivee <- cutree(taxis_cah_fait_arrivee, k = 3)
+```
+
+```{r}
+zones_cluster_arrivee <- as.data.frame(taxis_cah_arrivee)
+```
+
+```{r}
+zones_cluster_arrivee$clus <- factor(clus_zones_arrivee,
+                         	levels = 1:3,
+                         	labels = paste("Classe", 1:3))
+```
+
+```{r}
+zones_cluster_arrivee <- zones_cluster_arrivee %>% select (ID_zone_arr = zone_arrivee, nb_trajets, passagers_moyen, distance_moyenne, montant_moyen, clus)
+```
+
+### Création du tableau récapitulatif des classes
+```{r}
+recap_clus_zones_arrivee <- zones_cluster_arrivee %>% group_by(clus) %>%
+  summarise(nb_trajets_moy = mean(nb_trajets),
+        	passagers_moyen = mean(passagers_moyen),
+        	distance_moyenne = mean(distance_moyenne),
+        	montant_moyen = mean(montant_moyen))
+```
+
+```{r}
+synthese_cah_taxis_arrivee <- recap_clus_zones_arrivee %>% mutate(
+  NB_TRAJETS_MOY = mean(taxis_cah_OK_arrivee$nb_trajets),
+  PASSAGERSMOY = mean(taxis_cah_OK_arrivee$passagers_moyen),
+  DISTANCEMOY = mean(taxis_cah_OK_arrivee$distance_moyenne),
+  MONTANTMOY = mean(taxis_cah_OK_arrivee$montant_moyen),
+  nb_trajets = (nb_trajets_moy - NB_TRAJETS_MOY)/NB_TRAJETS_MOY*100,
+  passagers = (passagers_moyen - PASSAGERSMOY)/PASSAGERSMOY*100,
+  distance = (distance_moyenne - DISTANCEMOY)/DISTANCEMOY*100,
+  montant = (montant_moyen - MONTANTMOY)/MONTANTMOY*100)
+```
+
+```{r}
+synthese_cah_taxis_OK_arrivee <- data.frame(synthese_cah_taxis_arrivee[, c("clus", "nb_trajets", "passagers", "distance", "montant")])
+```
+
+```{r}
+gather_arrivee <- synthese_cah_taxis_OK_arrivee %>% gather(key=variable, value= "value", nb_trajets:montant)
+```
+
+```{r}
+ggplot(gather_arrivee, aes(x=variable, y=value, fill=clus)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values=c("#416979","#f9c155","#39a699","#FF4136","#FF851B", "#1f78b4")) +
+  ylab("Variation par rapport à la moyenne new-yorkaise (%)") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~clus, ncol = 1)
+```
+
+**Classe 1** : Peu d'arrivées et trajets longs et chers \n
+**Classe 2** : Beaucoup d'arrivées et trajets courts et peu chers\n
+**Classe 3** : Peu d'arrivées
+
+
+### Jointure du résultat de la typologie dans la couche des zones d'arrivée
+```{r}
+zones_trajets_cah_arrivee <- merge(taxis_zones_arrivee, zones_cluster_arrivee, by = "ID_zone_arr")
+```
+
+### Création de la carte 
+```{r}
+par(mar=c(0,0,1.2,0))
+```
+
+```{r}
+typoLayer(
+  x = zones_trajets_cah_arrivee,
+  var="clus",
+  col = c("#416979","#f9c155","#39a699","#FF4136","#FF851B", "#1f78b4"),
+  lwd = 0.1,
+  border = "white",
+  legend.values.order = c("Classe 1",
+                      	"Classe 2",
+                      	"Classe 3"),
+  legend.pos = "topleft",
+  legend.title.txt = "Zones d' \n arrivee de taxis",
+  legend.nodata = "Aucun départ")
+
+layoutLayer(title = "Typologie des zones d'arrivées de trajets en taxi en juillet 2021",
+        	author = "Sources : nyc.gov - Typologie obtenue par CAH",
+        	scale = 20, frame = TRUE, col = "#cdd2d4", coltitle = "#8A5543",
+        	north(pos = "topleft"), tabtitle=TRUE, horiz = FALSE)
+```
+
