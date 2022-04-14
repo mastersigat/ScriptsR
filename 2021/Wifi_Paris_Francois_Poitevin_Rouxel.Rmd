@@ -1,0 +1,868 @@
+---
+title: "Le Wifi à Paris"
+author: "Clémence François, Julie Poitevin, Léa Rouxel"
+date: "01/12/2021"
+output: html_document
+---
+
+Les données de Wifi sur les hotspots de la ville de Paris
+
+Ce script va permettre de préparer les données de Wifi dans la ville de Paris dans un premier temps.
+Dans un deuxième, un analyse avec un aspect spatial permet de comprendre le comportement des connexions depuis 2019.
+
+---
+
+## 1- Préparation du projet R
+
+### Télécharger les données nécessaires au projet :
+
+[Utilisation du Wifi de Paris (télécharger en csv)](https://opendata.paris.fr/explore/dataset/paris-wi-fi-utilisation-des-hotspots-paris-wi-fi/export/?disjunctive.incomingzonelabel&disjunctive.incomingnetworklabel&disjunctive.device_portal_format&disjunctive.device_constructor_name&disjunctive.device_operating_system_name_version&disjunctive.device_browser_name_version&disjunctive.userlanguage)
+
+[Localisation des hotspots du Wifi de Paris (télécharger en shp)](https://parisdata.opendatasoft.com/explore/dataset/sites-disposant-du-service-paris-wi-fi/export/?disjunctive.cp&disjunctive.etat2&location=13,48.84958,2.34841&basemap=jawg.streets)
+
+[Arrondissements de Paris (télécharger en shp)](https://opendata.paris.fr/explore/dataset/arrondissements/export/?disjunctive.c_ar&disjunctive.c_arinsee&disjunctive.l_ar&basemap=jawg.dark&location=12,48.85889,2.34692)
+
+### Définir l'environnement de travail
+
+On définit le dossier qui centralise les données et où les différents jeux de données seront exportés
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_knit$set(root.dir = 'C:/Users/learo/Downloads') #Changer l'adresse du répertoire
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+### Chargement des packages R nécessaires
+
+**S'assurer que l'ensemble des packages nécessaires sont bien installés**
+
+```{r message=FALSE}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(mapsf)
+library(cluster)
+library(ggplot2)
+library(wesanderson)
+library(treemap)
+library(plotly)
+```
+
+Mise en place d'une option permettant d'éviter l'écriture scientifique dans les graphiques et dans les cartes
+
+```{r message = FALSE}
+options (scipen = 999)
+```
+
+---
+
+### Importation des différents jeux de données utilisés
+
+#### Données d'utilisation du Wifi de Paris
+
+```{r message=FALSE}
+wifi <- read.csv("paris-wi-fi-utilisation-des-hotspots-paris-wi-fi.csv", header = TRUE, sep = ";", dec = ".", encoding = "UTF-8", stringsAsFactors=FALSE)
+```
+
+#### Données géographiques des arrondissements
+
+```{r message = FALSE}
+ardt <- st_read(dsn = "arrondissements.shp", stringsAsFactors = FALSE)
+ardt <- st_transform(ardt, 2154)
+```
+
+#### Données géographique des hotspots du Wifi de Paris
+
+```{r message = FALSE}
+sites <- st_read(dsn = "sites-disposant-du-service-paris-wi-fi.shp", stringsAsFactors = FALSE)
+sites <- st_transform(sites, 2154)
+```
+
+---
+
+On affiche la répartition des différents hotspots du Wifi de Paris (un affichage des arrondissements en fond permet de mieux comprendre la répartition)
+
+```{r}
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1)
+
+mf_typo(
+x = sites,
+var="nom_site",
+lwd = 1, leg_pos = "n", add = T)
+
+mf_theme(fg = "#000000")
+mf_title(txt="Localisation des hotspots de connexion au Wifi de Paris", bg = "#cdd2d4", fg = "#8A5543")
+mf_credits(txt="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris")
+mf_scale(2,pos = "bottomright")
+mf_arrow(pos = "topleft")
+```
+
+On joint aux données de localisation des hotspots les données d'utilisation du Wifi.\
+*Cela permet de transformer les données d'utilisation en objet géographique.*
+```{r}
+wifiSites <- merge(sites, wifi, by.x = "idpw", by.y = "Code.Site")
+```
+
+---
+
+## 2- Nettoyage et filtrage des données du Wifi de Paris
+
+### Etape 1 -> Sélection et renommage des variables à conserver
+
+```{r}
+wifiZero <- wifiSites %>% select(code_site = idpw, nom_site = Nom.du.site, starttime = Date.heure.début, endtime = Date.heure.fin, duration = Temps.de.session.en.secondes, code_postal = Code.postal, type_app = Type.d.appareil, constr_app = Constructeur.appareil, navigateur = Version.navigateur, octet_in = Donnée.entrante..Octet., octet_out = Donnée.sortante..Octet., language = Langue.utilisateur, adresse = Adresse, nb_borne = Nombre.de.bornes, geometrie = geometry)
+```
+
+### Etape 2 -> Formatage et création des variables liées à la date et à l'heure
+
+```{r}
+wifiZero <- wifiZero %>% mutate(s_jour = as.Date(substr(starttime,1,10)))
+wifiZero <- wifiZero %>% mutate(s_heure = substr(starttime,12,19))
+wifiZero <- wifiZero %>% mutate(s_annee = substr(starttime,1,4))
+wifiZero <- wifiZero %>% mutate(s_journee = wday(s_jour,label= TRUE, abbr= FALSE))
+wifiZero <- wifiZero %>% mutate(s_mois = month(s_jour,label = TRUE, abbr = FALSE))
+wifiZero$s_journee <- factor(wifiZero$s_journee,levels = c("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"))
+```
+
+Réalisation d'un graphique récapitulatif du nombre de connexions aux hotspots par jour avec une catégorisation par jour de la semaine
+
+```{r}
+AgregDate <- wifiZero %>% group_by(s_jour, s_journee) %>% summarise (NbConnexions= n())
+
+ggplot(AgregDate, aes(x=s_jour, y=NbConnexions, fill=s_journee)) + 
+    geom_bar(stat="identity") +
+    theme_minimal() + 
+    scale_fill_brewer(palette="Set2") +
+    labs(x = "", y = "Nombre de connexions") +
+    labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris")+ guides(fill=guide_legend(title="Jour"))+ ggtitle("Nombre de connexions au Wifi de Paris par jour entre 2019 et 2021 ")
+```
+
+Réalisation de deux graphiques récapitulatif du nombre de connexions et de la duréer moyenne par jour de la semaine au Wifi de Paris
+
+```{r}
+AgregJour <- wifiZero %>% group_by(s_journee) %>% summarise (NbConnexions= n(), DureeMoyenne = mean(duration))
+
+ggplot(AgregJour, aes(x=s_journee, y=NbConnexions, fill=s_journee)) + 
+    geom_bar(stat="identity") +
+    theme_minimal() + 
+    scale_fill_brewer(palette="Set2") +
+    labs(x = "", y = "Nombre de connexions") +
+    labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris")+ ggtitle("Nombre de connexions au Wifi de Paris par jour de la semaine") + guides(fill = "none")
+
+ggplot(AgregJour, aes(x=s_journee, y=DureeMoyenne, fill=s_journee)) + 
+    geom_bar(stat="identity") +
+    theme_minimal() + 
+    scale_fill_brewer(palette="Set2") +
+    labs(x = "", y = "Durée de connexion") +
+    labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris")+ ggtitle("Durée moyenne de connexion au Wifi de Paris par jour de la semaine") + guides(fill = "none")
+```
+
+### Etape 3 -> Suppression des entités vides, extérieures à Paris et non numériques
+
+*Affichage d'un tableau récapitulatif des modalités de code postal*
+```{r}
+wifiZero %>% group_by(code_postal) %>% summarise(n())
+```
+
+```{r}
+wifiZero <- wifiZero %>% filter(! (code_postal == "" | code_postal == "#N/A" | code_postal =="MUSEE DE LA LIBERATION" | code_postal == "MAISON VICTOR HUGO" | code_postal == "MUSEE CARNAVALET" | code_postal == "92100"))
+```
+
+### Etape 4 -> Création d'un variable arrondissement à partir du code postal
+
+```{r}
+wifiZero <- wifiZero %>% mutate(ardt = as.integer(substr(code_postal, 3, 5)))
+```
+
+### Etape 5 -> Vérification de l'uniformisation du code_site
+
+*Affichage d'un tableau récapitulatif des modalités du code de site*
+```{r}
+wifiZero %>% group_by(code_site) %>% summarise(n())
+```
+
+### Etape 6 -> Reclassification des modalités similaires
+
+#### Pour la variable type de support
+
+*Affichage d'un graphique récapitulatif des modalités du type de support*
+```{r}
+TypeApp <- wifiZero %>% group_by(type_app) %>% summarise(Nb=n())
+
+ggplot(TypeApp) + geom_col(aes(x = Nb, y = type_app), fill="#b1dcac", width = .3) + 
+  xlab("Nombre de connexions") + ylab("Type de support")+
+  labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris")+
+  ggtitle("Nombre de connexions au Wifi de Paris selon le type de support")
+```
+
+```{r}
+wifiZero$type_app[wifiZero$type_app %in% c("Computer")]<-"Ordinateur"
+
+wifiZero$type_app[wifiZero$type_app %in% c("Tablet")]<-"Tablette"
+```
+
+#### Pour la variable constructeur du support
+
+```{r}
+wifiZero %>% group_by(constr_app) %>% summarise(n())
+```
+
+```{r}
+wifiZero$constr_app[wifiZero$constr_app %in% c("other","autre")]<-"Autres"
+```
+
+### Etape 7 -> Reclassification des modalités similaires et suppression de la version du navigateur
+
+```{r}
+wifiZero %>% group_by(navigateur) %>% summarise(n())
+```
+
+```{r}
+wifiZero$navigateur[wifiZero$navigateur %in% c("unknown", "","inconnu")]<-"Inconnu"
+wifiZero <- wifiZero %>% separate(col= navigateur, into = c("browser"), sep= " ")
+```
+
+### Etape 8 -> Vérification et uniformisation des modalités de la variable Langue
+
+*Affichage d'un graphique récapitulatif des modalités de Langue*
+```{r}
+Langue <- wifiZero %>% group_by(language) %>% summarise(Nb = n())
+
+ggplot(Langue) + geom_col(aes(x = Nb, y = language), fill="#b1dcac", width = .9) + 
+  xlab("Nombre de connexions") + ylab("Langue")+
+  labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris")+
+  ggtitle("Nombre de connexions au Wifi de Paris selon la langue")
+```
+
+#### Correction de l'encodage du fichier de base et reclassification des modalités similaires
+
+```{r}
+wifiZero$language[wifiZero$language %in% c("", "#N/A")]<-"Autres"
+wifiZero$language[wifiZero$language %in% c("Fran‡ais")]<-"Français"
+wifiZero$language[wifiZero$language %in% c("Tha‹landais")]<-"Thaïlandais"
+wifiZero$language[wifiZero$language %in% c("Chinois simplifié", "Chinois traditionnel", "Chinois simplifi‚")]<-"Chinois"
+wifiZero$language <- str_replace(wifiZero$language, pattern = "‚", replacement = "é")
+```
+
+### Création d'un tableau secondaire excluant les valeurs d'Octet_in = 0
+
+```{r}
+wifiOk <- wifiZero %>% filter(! octet_in == 0)
+```
+
+---
+## 3- Analyse des données du Wifi de Paris
+
+---
+### Création d'une grille de 500m sur 500m sur l'emprise de Paris
+```{r}
+grille <- st_make_grid(
+   wifiOk,
+   cellsize = 500,
+   crs = 2154, 
+   what = "polygons",
+   square = FALSE)
+
+#Transformation de la grille en objet spatial
+grille <- st_sf(grille)
+
+#Ajout d'un identifiant unique à chaque carreau
+grille <- grille %>% mutate(id = row_number())
+```
+
+---
+
+*Intégration à chaque connexion au Wifi de l'entité du carreau de la grille correspondant*
+```{r}
+wifiGrille <- st_join(wifiOk, grille["id"])
+```
+
+### Mise en place d'une CAH
+
+#### Construction du dataframe comprenant les variables de la CAH agrégées à chaque carreau de la grille
+- Nombre de connexions au Wifi
+- Durée de connexions moyenne au Wifi
+- Moyenne des octets entrants
+- Moyenne des octets sortants
+
+```{r}
+PrepaCAH <- wifiGrille %>% group_by(id) %>%
+  summarise(NbConnexions = n(),
+            DureeMoyenne = mean(duration),
+            Octet_in = mean(octet_in),
+            Octet_out = mean(octet_out)
+            )
+CAH1 <- data.frame(PrepaCAH[, c("NbConnexions", "DureeMoyenne", "Octet_in", "Octet_out")])
+CAH1 <- CAH1 %>% select(NbConnexions, DureeMoyenne, Octet_in, Octet_out)
+```
+
+#### Centrage et réduction des variables agrégées
+
+```{r}
+CAHscale <- scale(CAH1)
+```
+
+#### Calcul de la CAH
+
+La CAH a été calculée à l’aide de l’algorithme de regroupement hiérarchique ascendant AGNES en utilisant la méthode de Ward et la distance euclidienne.
+
+Les individus sont regroupés de façon à ce que les classes constituées soient les plus homogènes possibles, c’est-à-dire avec une inertie intraclasse minimale et une variance interclasse maximale.
+
+```{r}
+CAHGrille <- agnes(CAHscale,
+                     metric = "euclidean",
+                     method = "ward")
+```
+
+#### Graphique des gains d'inertie inter-classe
+
+```{r}
+sortedHeight<- sort(CAHGrille$height,decreasing= TRUE)
+
+relHeight<-sortedHeight/ sum(sortedHeight)*100
+
+barplot(relHeight[1:30],names.arg=seq(1, 30, 1),col= "#900C3F",border= "white",xlab= "Noeuds",ylab= "Part de l'inertie totale (%)", main = "Graphique d'inertie de la CAH")
+```
+
+#### Partitionnement en 5 classes
+
+```{r}
+clusGrille <- cutree(CAHGrille, k = 5)
+GrilleCluster <- as.data.frame(PrepaCAH)
+
+GrilleCluster$CLUSWIFI <- factor(clusGrille,
+                                   levels = 1:5,
+                                   labels = paste("Classe", 1:5))
+```
+
+#### Tableau récapitulatif des groupes
+
+```{r}
+RecapCAHGrille <- GrilleCluster %>% group_by(CLUSWIFI) %>% 
+summarise(NB= n(), NbConnex = mean(NbConnexions), DureeMean = mean(DureeMoyenne), OInMoyen = mean(Octet_in), OOutMoyen=mean(Octet_out))
+
+RecapCAHGrille
+```
+
+#### Graphique récapitulatif des écarts à la moyenne
+
+**Construire un tableau récapitulatif des écarts à la moyenne**
+```{r}
+SyntheseCAHGrille <- RecapCAHGrille %>% mutate(
+  nbconnexmoy = mean(CAH1$NbConnexions),
+  dureemoy = mean(CAH1$DureeMoyenne),
+  inmoy = mean(CAH1$Octet_in),
+  outmoy = mean(CAH1$Octet_out),
+  NbConn=(NbConnex- nbconnexmoy)/nbconnexmoy*100,
+  Duree=(DureeMean- dureemoy)/dureemoy*100,
+  Octet_in=(OInMoyen- inmoy)/inmoy*100,
+  Octet_out=(OOutMoyen- outmoy)/outmoy*100)
+  
+SyntheseCAHGrille <- data.frame(SyntheseCAHGrille[, c("CLUSWIFI","NbConn", "Duree", "Octet_in", "Octet_out")])
+
+SyntheseCAHGrille
+```
+
+**Transformation du tableau pour le passer en long**
+```{r}
+gather <- SyntheseCAHGrille %>% gather(key=variable, value= "value", NbConn:Octet_out)
+```
+
+**Affichage d'un graphique récapitulatif**
+```{r}
+ggplot(gather, aes(x=variable, y=value, fill=CLUSWIFI)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values=c("#416979","#f9c155","#39a699","#FF851B", "#1f78b4")) +
+  ylab("") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~CLUSWIFI, ncol = 1)+
+  labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris")+
+  ggtitle("Variation des classes de la CAH par rapport à la \nmoyenne du carroyage de Paris (%)")
+```
+
+#### Mise en place d'une cartographie de la CAH
+
+**Inclure le résultat de la CAH (typologie) dans la couche de la grille**
+```{r}
+GrilleWifiCAH <- left_join(grille, GrilleCluster, by= "id")
+```
+
+**Faire la carte catégorisée**
+```{r}
+par(mar=c(0,0,1.2,0))
+
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1)
+
+mf_typo(
+x = GrilleWifiCAH,
+var="CLUSWIFI",
+pal = c("#416979","#f9c155","#39a699","#FF851B", "#1f78b4"),
+lwd = 0.1,
+border = "#FFFFFF00",
+col_na = "#FFFFFF00",
+add = T, leg_pos = "n")
+
+mf_legend_t(pos = "topright",
+val = c("Classe 1", "Classe 2","Classe 3","Classe 4","Classe 5"),
+pal = c("#416979","#f9c155","#39a699","#FF851B", "#1f78b4"), no_data = FALSE,
+title = "Caractéristiques \nde connexion \npar type de classe",
+title_cex = 0.7)
+
+mf_title("Caractéristiques de connexion au Wifi de Paris à l'échelon du carreau  (2019-2021)",bg = "#cdd2d4", fg = "#8A5543")
+mf_credits("Source : Direction des Systèmes d’Information \net du Numérique - Ville de Paris")
+mf_scale(2, pos = "bottomright")
+mf_arrow(pos = "topleft")    
+```
+
+### Heatmap analysant le nombre de connexions à plusieurs échelles temporelles
+
+#### Heatmap sur l'année 2020
+
+**Préparation des données et construction d'un data-frame récapitulatif**
+```{r}
+Prepheatmap <- wifiZero %>% filter(s_annee == "2020")
+Prepheatmap <- Prepheatmap %>% mutate(jour = (day(Prepheatmap$s_jour)), wotm= ceiling(day(Prepheatmap$s_jour) / 7))
+
+heatmap <- Prepheatmap %>% group_by(s_journee, jour, s_mois, wotm) %>% summarise(NB_Connexions=n())
+```
+
+**Affichage du résultat sous forme graphique**
+```{r}
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+ggplot(heatmap, aes(s_journee,s_mois, fill = NB_Connexions)) + geom_tile(colour = "white") + 
+      labs(fill = "Nombre de connexions") +
+      scale_fill_gradientn(colours = pal) + 
+      xlab("Jour de la semaine") +
+      ylab("Mois") + 
+      ggtitle("Nombre de connexions au Wifi de Paris par jour en 2020") + 
+      labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris") +       theme_bw()
+```
+
+#### Heatmap par jour entre 2019 et 2021
+
+**Préparation des données et construction d'un data-frame récapitulatif**
+```{r}
+PrepheatTt<- wifiZero %>% mutate(jour = (day(wifiZero$s_jour)), wotm= ceiling(day(wifiZero$s_jour) / 7))
+
+heatmap2 <- PrepheatTt %>% group_by(s_jour, s_journee, jour, s_mois, s_annee, wotm) %>% summarise(Nb_Connexions=n())
+```
+
+**Affichage sous forme graphique**
+```{r}
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+ggplot(heatmap2, aes(wotm, s_journee, fill = Nb_Connexions)) + geom_tile(colour = "white") + 
+facet_grid(s_annee~s_mois) + labs(fill = "Nombre de connexions") +
+scale_fill_gradientn(colours = pal) + xlab("Semaine du mois") +
+ylab("Jour de la semaine") + ggtitle("Nombre de connexions par jour et mois au Wifi de Paris (2019-2021)") + 
+labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris") + theme_bw()
+```
+
+### Treemap par arrondissement et type du support ou marque du support
+
+**Construction de deux data-frames récapitulatifs**
+```{r}
+TreemTapp <-wifiZero%>% group_by(ardt, type_app) %>% summarise(nb=n())
+TreemCapp <-wifiZero%>% group_by(ardt, constr_app) %>% summarise(nb=n())
+
+# Transformation en objet data frame pour permettre l'utilisation du package Treemap
+TreemTapp1 <- data.frame(TreemTapp[, c("ardt", "type_app", "nb")])
+TreemCapp1 <- data.frame(TreemCapp[, c("ardt", "constr_app", "nb")])
+```
+
+```{r}
+treemap(TreemTapp1, index=c("ardt", "type_app"),vSize="nb", type="index",
+    fontsize.labels=c(14,10),                
+    fontcolor.labels=c("black","white"),    
+    fontface.labels=c(2,2),                  
+    bg.labels=c("transparent"),              
+    align.labels=list(
+        c("left", "top"),
+        c("center", "center")),                                   
+    overlap.labels=0.5,                      
+    inflate.labels=F,
+    title = "Type de support utilisé depuis le Wifi de Paris par arrondissement")
+
+treemap(TreemCapp1, index=c("ardt", "constr_app"),vSize="nb", type="index",
+    fontsize.labels=c(14,10),                
+    fontcolor.labels=c("black","white"),    
+    fontface.labels=c(2,2),                  
+    bg.labels=c("transparent"),              
+    align.labels=list(
+        c("left", "top"),
+        c("center", "center")),                                   
+    overlap.labels=0.5,                      
+    inflate.labels=F,
+    title = "Marque du support utilisée depuis le Wifi de Paris par arrondissement")
+```
+
+### Small multiple 
+On va construire un small multiple du nombre de connexions en fonction du jour de la semaine, du mois ainsi que du type de support utilisé lors des connexions au Wifi de Paris sur l'année 2020
+
+**Préparation des données et construction du data-frame nécessaire au small multiple**
+```{r message=FALSE, warning=FALSE}
+small2020<- wifiZero %>% filter(s_annee == "2020")
+small <- wifiZero %>% group_by(Jour=s_journee,Mois=s_mois,Type=type_app) %>% summarise(Nb_Connexions=n())
+```
+
+**Affichage du résultat sous la forme graphique**
+```{r}
+ggplot(small, aes(x=Jour, y=Nb_Connexions, fill = Type)) + geom_col() +
+theme_bw() + facet_grid(Type~Mois) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), strip.text.y = element_text(face = 2)) + ylab("Nombre de connexions") + ggtitle("Nombre de connexions au Wifi de Paris selon le type de support en 2020") + 
+labs(caption="Source : Direction des Systèmes d’Information et du Numérique - Ville de Paris") + guides(fill = "none")
+```
+
+### Cartographie du nombre de connexions par Langue au Wifi de Paris
+
+#### Sélection des langues utilisées dans la cartographie
+```{r}
+LangueWifi<-wifiZero %>% filter(language %in% c("Russe", "Chinois", "Arabe", "Coréen", "Japonais"))
+```
+
+#### Jointure spatiale entre le data-frame des connexions et la grille
+```{r}
+languejoin <- st_join(LangueWifi, grille["id"])
+```
+
+#### Réalisation du tableau d'agrégation du nombre de connexions par identifiant du carreau et par Langue
+```{r message=FALSE, warning=FALSE}
+PrepaLangue <- languejoin %>% group_by(id, language) %>% summarise(Nb_Connexions = n())
+```
+
+### Passage du tableau d'agrégation en forme long pour que chaque Langue deviennent une variable
+```{r}
+LangueColonne <- PrepaLangue %>% spread(key= language, value = Nb_Connexions)
+```
+
+#### Jointure attributaire entre le tableau d'agrégation et la grille pour réaliser la cartographie
+```{r}
+LangueColonne1 <- data.frame(LangueColonne[, c("id", "Arabe", "Chinois", "Coréen","Japonais","Russe")])
+LangueGrille <- merge(grille, LangueColonne1, by="id")
+```
+
+#### Construction des 5 classes utilisés dans la cartographie
+```{r}
+classe <- mf_get_breaks(PrepaLangue$Nb_Connexions, 5, "quantile")
+```
+
+#### Production d'une planche avec une carte du nombre de connexions pour chaque Langue
+```{r}
+par(mar=c(0,0,0.9,0))
+par(mfrow=c(2,3))
+
+#Carte langue Arabe
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1)   
+mf_choro(
+   x = LangueGrille, 
+   var = "Arabe",
+   breaks = classe,
+   pal = c("#E2E5FD", "#ABB3E6", "#7480CF", "#3D4DB8", "#051AA0"),
+   leg_pos = "n",
+   border = "#FFFFFF00",
+   col_na = "#FFFFFF00",
+   add = T)
+mf_legend_c(pos = "topright",
+            val = classe,
+            title = "Nombre de\nconnexions",
+            pal = c("#E2E5FD", "#ABB3E6", "#7480CF", "#3D4DB8", "#051AA0"),
+            no_data = FALSE,
+            cex = 0.5
+            )
+mf_scale(size = 2)
+mf_arrow(pos = "topleft")
+mf_title(txt = "Arabe", pos = "center", bg = "white", fg = "black")
+
+
+#Carte langue Chinois   
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1)   
+mf_choro(
+   x = LangueGrille, 
+   var = "Chinois",
+   breaks = classe,
+   pal = c("#DFC9D1", "#BE9DAA", "#9C7182", "#7A455A", "#581832"),
+   leg_pos = "n",
+   border = "#FFFFFF00",
+   col_na = "#FFFFFF00",
+   add = T)
+mf_legend_c(pos = "topright",
+            val = classe,
+            title = "Nombre de\nconnexions",
+            pal = c("#DFC9D1", "#BE9DAA", "#9C7182", "#7A455A", "#581832"),
+            no_data = FALSE,
+            cex = 0.5
+            )
+mf_scale(size = 2)
+mf_title(txt = "Chinois", pos = "center", bg = "white", fg = "black")
+  
+#Carte langue Coréen
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1)   
+mf_choro(
+   x = LangueGrille, 
+   var = "Coréen",
+   breaks = classe,
+   pal = c("#F7D6F9", "#E8ACEB", "#D881DD", "#C857CF", "#B82CC0"),
+   leg_pos = "n",
+   border = "#FFFFFF00",
+   col_na = "#FFFFFF00",
+   add = T)
+mf_legend_c(pos = "topright",
+            val = classe,
+            title = "Nombre de\nconnexions",
+            pal = c("#F7D6F9", "#E8ACEB", "#D881DD", "#C857CF", "#B82CC0"),
+            no_data = FALSE,
+            cex = 0.5
+            )
+mf_scale(size = 2)
+mf_title(txt = "Coréen", pos = "center", bg = "white", fg = "black")
+   
+#Carte langue Japonais   
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1)   
+mf_choro(
+   x = LangueGrille, 
+   var = "Japonais",
+   breaks = classe,
+   pal = c("#E5C811", "#DCA60D", "#D38409", "#CE7307", "#C96204"),
+   leg_pos = "n",
+   border = "#FFFFFF00",
+   col_na = "#FFFFFF00",
+   add = T)
+mf_legend_c(pos = "topright",
+            val = classe,
+            title = "Nombre de\nconnexions",
+            pal = c("#E5C811", "#DCA60D", "#D38409", "#CE7307", "#C96204"),
+            no_data = FALSE,
+            cex = 0.5
+            )
+mf_scale(size = 2)
+mf_credits("Source : Direction des Systèmes d’Information\net du Numérique - Ville de Paris")
+mf_title(txt = "Japonais", pos = "center", bg = "white", fg = "black")
+
+#Carte langue Russe   
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1)   
+mf_choro(
+   x = LangueGrille, 
+   var = "Russe",
+   breaks = classe,
+   pal = c("#CDE4D4", "#9CC0A7", "#6A9C7A", "#39784D", "#07531F"),
+   leg_pos = "n",
+   border = "#FFFFFF00",
+   col_na = "#FFFFFF00",
+   add = T)
+mf_legend_c(pos = "topright",
+            val = classe,
+            title = "Nombre de\nconnexions",
+            pal = c("#CDE4D4", "#9CC0A7", "#6A9C7A", "#39784D", "#07531F"),
+            no_data = FALSE,
+            cex = 0.5
+            )
+mf_scale(size = 2)
+mf_title(txt = "Russe", pos = "center", bg = "white", fg = "black")
+```
+
+### Cartographie en cercle proportionnel de la moyenne de octets entrants et sortants
+
+#### Construction des data-frames d'agrégations
+```{r}
+OEntrant <- wifiOk %>% group_by(Site = code_site) %>% summarise(Octet_in=mean(octet_in))
+OSortant <- wifiOk %>% group_by(Site = code_site) %>% summarise(Octet_out=mean(octet_out))
+```
+
+#### Production d'une planche de 2 cartes
+```{r}
+par(mar=c(0,0,0.9,0))
+par(mfrow=c(1,2))
+
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1) 
+mf_map(x = OEntrant,
+       var = "Octet_in",
+       type = "prop",
+       inches = 0.12,
+       symbol = "circle",
+       col = "#5bb5ef7D",
+       border = "#535353",
+       add=T,
+       leg_title = "Octets entrants",
+       leg_title_cex = 0.7)
+
+mf_arrow(pos = "topleft")
+mf_credits("Source : Direction des Systèmes d’Information\net du Numérique - Ville de Paris")
+
+mf_base(x = ardt, col ="#dfdfdf", border = "#959595", lwd = 1) 
+mf_map(x = OSortant,
+       var = "Octet_out",
+       type = "prop",
+       inches = 0.12,
+       symbol = "circle",
+       col = "#a6f0a77D",
+       border = "#535353",
+       add=T,
+       leg_title = "Octets sortants",
+       leg_title_cex = 0.7)
+mf_scale(size = 2)
+
+
+mtext("Moyenne des octets entrants et sortants au Wifi de Paris entre 2019 et 2021",
+      side = 3,
+      line = -1.5,
+      outer = TRUE)
+```
+
+#### Diagramme en barres pour visualiser les pourcentages d'utilisation des différents types d'appareils
+
+**Préparation des données et construction d'un data-frame récapitulatif**
+
+```{r}
+langueApp <- wifiOk %>%  count(language,type_app)
+langueApp2 <- langueApp %>% group_by(language) %>%  summarise(NbLangue = sum(n))
+langueApp2 <- left_join(as.data.frame(langueApp), langueApp2, by=c("language"))
+langueApp2 <- langueApp2 %>% select(language,type_app,n,NbLangue) %>%  mutate(pourcentage = (n/NbLangue)*100)
+```
+
+**Production du diagramme en barres empilées**
+
+```{r}
+plot_ly(
+  data = langueApp2,
+  x = ~language,
+  y = ~pourcentage,
+  color = ~type_app,
+  colors = c("#e9c46a","#2a9d8f","#264653"),
+  type = "bar"
+) %>% 
+  layout(barmode = "stack",title = "Pourcentage d'utilisation par type d'appareil de 2019 à 2021")
+```
+
+#### Série temporelle de cartes indiquant les volumes de connexions par langue (hors français) par moments de la journée
+
+**Préparation des données et construction de data-frames spatiaux par moment de la journée**
+
+```{r}
+langue <- wifiOk %>% filter(!(language == "Français"| language == "Autres" ))
+
+langueAM <- langue  %>%  filter(between(as.numeric(substr(langue$s_heure,1,2)),0,11))
+languePM <- langue  %>%  filter(between(as.numeric(substr(langue$s_heure,1,2)),12,18))
+langueSoir <- langue  %>%  filter(between(as.numeric(substr(langue$s_heure,1,2)),19,23))
+
+langue0AM <- langueAM %>% count(nom_site,language)
+langue0PM <- languePM %>% count(nom_site,language)
+langue0Soir <- langueSoir %>% count(nom_site,language)
+
+langue1AM <- langue0AM   %>%  group_by(nom_site)  %>% summarise_if(is.numeric, max)
+langue1PM <- langue0PM   %>%  group_by(nom_site)  %>% summarise_if(is.numeric, max)
+langue1Soir <- langue0Soir   %>%  group_by(nom_site)  %>% summarise_if(is.numeric, max)
+
+langue2AM <- left_join(as.data.frame(langue1AM), langue0AM, by=c("nom_site","n")) 
+langue2PM <- left_join(as.data.frame(langue1PM), langue0PM, by=c("nom_site","n")) 
+langue2Soir <- left_join(as.data.frame(langue1Soir), langue0Soir, by=c("nom_site","n"))
+
+langue3AM <- st_as_sf(langue2AM)
+langue3PM <- st_as_sf(langue2PM)
+langue3Soir <- st_as_sf(langue2Soir)
+
+```
+
+**Affichage d'un tableau de 3 cartes, une carte par moment de la journée.**\
+**Le matin va de 00h à 12h, l'après-midi va de 12h00 à 19h, le soir va de 19h à 00h**
+
+```{r,out.width = 5000}
+par(mar=c(0,0,3,0))
+par(mfrow=c(1,3))
+mf_init(x = ardt, expandBB = c(1.4,0,0,0))
+mf_shadow(x = ardt, col = "grey50", cex = 1, add = TRUE)
+mf_map(x = ardt, type = "base", col ="#dfdfdf", border = "#959595", lwd = 1, add = TRUE)
+palAM <- c("#a6cee3", "#fdfcdc7D", "#1f78b4", "#b2df8a", "#33a02c","#fb9a99","#e31a1c", "#fdbf6f", "#ff7f00", "#cab2d6")
+mf_map(
+  x = langue3AM,
+  var=c("n","language"),
+  type = "prop_typo",
+  val_max = 10000,
+  symbol = "circle",
+  lwd = 1, 
+  pal = palAM,
+  val_order = c("Allemand","Anglais","Arabe","Chinois","Espagnol","Italien","Néerlandais","Polonais","Portugais","Russe"),
+  border = "#a2acbd",
+  inches = .35,
+  col_na = "grey",
+  leg_pos = c("topright", "bottomleft"),
+  leg_title = c("Nombre de connexions entre 2019 et 2021", "langue"),
+  leg_title_cex = c(0.7,0.7),
+  leg_val_cex = c(.5, .5),
+  leg_no_data = "No data",
+  leg_frame = c(FALSE, FALSE),
+  add = T)
+mf_title("Nombre de connexions par langue le matin",bg = "#cdd2d4", fg = "#8A5543")
+mf_scale(2)
+
+mf_init(x = ardt, expandBB = c(0.5,0,0,0))
+mf_shadow(x = ardt, col = "grey50", cex = 1, add = TRUE)
+mf_map(x = ardt, type = "base", col ="#dfdfdf", border = "#959595", lwd = 1, add = TRUE)
+palPM <- c("#a6cee3", "#fdfcdc7D", "#b2df8a", "#33a02c","#fb9a99","#cab2d6","#6a3d9a")
+mf_map(
+  x = langue3PM,
+  var=c("n","language"),
+  val_max = 10000,
+  symbol = "circle",
+  type = "prop_typo",
+  lwd = 1, 
+  pal = palPM,
+  val_order = c("Allemand","Anglais","Chinois","Espagnol","Italien","Russe","Japonais"),
+  border = "#a2acbd",
+  inches = .35,
+  col_na = "grey",
+  leg_pos = c("topright", "bottomleft"),
+  leg_title = c("Nombre de connexions entre 2019 et 2021", "langue"),
+  leg_title_cex = c(0.75,0.75),
+  leg_val_cex = c(.7, .7),
+  leg_no_data = "No data",
+  leg_frame = c(FALSE, FALSE),
+  add = T)
+mf_title("Nombre de connexions l'après-midi",bg = "#cdd2d4", fg = "#8A5543")
+mf_scale(2)
+
+mf_init(x = ardt, expandBB = c(1.4,0,0,0))
+mf_shadow(x = ardt, col = "grey50", cex = 1, add = TRUE)
+mf_map(x = ardt, type = "base", col ="#dfdfdf", border = "#959595", lwd = 1, add = TRUE)
+palSoir <- c("#a6cee3", "#fdfcdc7D", "#1f78b4", "#b2df8a", "#33a02c","#fb9a99","#e31a1c", "#fdbf6f", "#ff7f00", "#cab2d6")
+mf_map(
+  x = langue3Soir,
+  var=c("n","language"),
+  val_max = 10000,
+  symbol = "circle",
+  type = "prop_typo",
+  lwd = 1, 
+  pal = palSoir,
+  val_order = c("Allemand","Anglais","Arabe","Chinois","Espagnol","Italien","Néerlandais","Polonais","Portugais","Russe"),
+  border = "#a2acbd",
+  inches = .35,
+  col_na = "grey",
+  leg_pos = c("topright", "bottomleft"),
+  leg_title = c("Nombre de connexions entre 2019 et 2021", "langue"),
+  leg_title_cex = c(0.75,0.75),
+  leg_val_cex = c(.7, .7),
+  leg_no_data = "No data",
+  leg_frame = c(FALSE, FALSE),
+  add = T)
+
+mf_title("Nombre de connexions par langue le soir",bg = "#cdd2d4", fg = "#8A5543")
+mf_scale(2)
+
+```
+
+#### Boîte à moustaches représentant les durées de connexions selon le type d'appareil
+
+4 valeurs aberrantes ont été supprimées
+
+```{r}
+#suppression des valeurs aberrantes
+duree <- wifiOk %>% filter(!(duration > 40000))
+
+fig <- plot_ly(ggplot2::diamonds, y = ~duree$duration, color = ~duree$type_app, type = "box") %>% layout(showlegend = FALSE) %>%
+    layout(title = "Durée des connexions selon le type d'appareil",
+           xaxis = list(title = "Type d'appareil"),
+           yaxis = list(title = "Durée de connexion"))
+                        
+fig
+```
+
+
+
