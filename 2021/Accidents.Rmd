@@ -1,0 +1,676 @@
+---
+title: "Etude du jeu de données de la base accidents corporels"
+author: "Lou Hennenfent, Julia Mortier, Carl Nosland "
+date: "01/12/2021"
+output: html_document
+---
+Notre script va explorer les données de la base accidents de la France entière. Il est composé de 5 jeux de données :
+- accidents.csv
+- caracteristiques-2020.csv
+- lieux-2020.csv
+- usagers-2020.csv
+- véhicules-2020.csv
+
++ un jeu de données pour des analyses supplémentaires : 
+- BASE_TD_FILO_DEC_IRIS_2018.csv
+---
+
+
+## Setup
+
+Definition du répertoire et chargement des librairies
+```{r setup, include=FALSE, message=FALSE}
+setwd(
+  "C:/Users/louhe/OneDrive/Documents/louschool/Master2/Semestre3/TGA_boris/r/accidents"
+)
+library(stringr)
+library(dplyr)
+library(tidyverse)
+library(scales)
+library(ggplot2)
+library(treemap)
+library(wesanderson)
+library(sf)
+library(cartography)
+library(rgdal)
+library(mapdeck)
+library(shiny)
+library(leaflet)
+library(spData) 
+library(GmAMisc)
+```
+
+Import des données
+```{r}
+caracteristiques <-
+  read.csv("caracteristiques-2020.csv",
+           sep = ";",
+           fileEncoding = "UTF-8")
+caracteristiques$Num_Acc <- as.character(caracteristiques$Num_Acc)
+
+lieux <- read.csv("lieux-2020.csv", sep = ";")
+lieux$Num_Acc <- as.character(lieux$Num_Acc)
+
+usagers <-
+  read.csv("usagers-2020.csv", sep = ";", fileEncoding = "UTF-8")
+usagers$Num_Acc <- as.character(usagers$Num_Acc)
+usagers$id_vehicule <- as.character(usagers$id_vehicule)
+
+vehicules <-
+  read.csv("vehicules-2020.csv",
+           sep = ";",
+           fileEncoding = "UTF-8")
+vehicules$Num_Acc <- as.character(vehicules$Num_Acc)
+vehicules$id_vehicule <- as.character(vehicules$id_vehicule)
+
+length(unique(usagers$id_vehicule))
+```
+
+
+## Préparation des données
+
+Catégoriser les vehicules selon le nombre de piétons / voitures heurtées
+```{r}
+vehicules_test <- vehicules %>%
+  mutate(heurt_pietons = case_when(obsm == "1" ~ "1",
+                                   TRUE ~ "0")) %>%
+  mutate(heurt_voiture = case_when(obsm == "2" ~ "1",
+                                   TRUE ~ "0")) %>%
+  mutate(interdit = case_when(manv %in% c("5", "6", "7", "8", "10", "18", "25") ~ "1",
+                              TRUE ~ "0"))
+```
+
+Changer le type de données pour pouvoir les sommer
+```{r}
+vehicules_test$heurt_pietons <-
+  as.integer(vehicules_test$heurt_pietons)
+vehicules_test$heurt_voiture <-
+  as.integer(vehicules_test$heurt_voiture)
+vehicules_test$interdit <- as.integer(vehicules_test$interdit)
+```
+
+Nombre de piétons et voitures heurtées par accident & nombre d'infractions
+```{r}
+vehicule_pieton <-
+  aggregate(
+    vehicules_test$heurt_pietons,
+    by = list(Num_Acc = vehicules_test$Num_Acc),
+    FUN = sum
+  )
+vehicule_voiture <-
+  aggregate(
+    vehicules_test$heurt_voiture,
+    by = list(Num_Acc = vehicules_test$Num_Acc),
+    FUN = sum
+  )
+vehicule_interdit <-
+  aggregate(
+    vehicules_test$interdit,
+    by = list(Num_Acc = vehicules_test$Num_Acc),
+    FUN = sum
+  )
+```
+
+Ajouter les données de piétons et voitures dans les caracteristiques & nombre d'infractions
+
+```{r}
+caract_new <-
+  merge(caracteristiques, vehicule_pieton, by = "Num_Acc") %>% rename(pieton = x)
+caract_new <-
+  merge(caract_new, vehicule_voiture, by = "Num_Acc") %>% rename(voiture = x)
+caract_new <-
+  merge(caract_new, vehicule_interdit, by = "Num_Acc") %>% rename(interdit = x)
+```
+
+Nettoyage des données
+
+```{r}
+rm(
+  caracteristiques,
+  vehicule_group,
+  vehicule_group2,
+  vehicule_interdit,
+  vehicule_pieton,
+  vehicule_voiture,
+  vehicules,
+  vehicules_test
+)
+```
+
+## Recatégoriser les données
+Catégoriser les usagers selon la gravité de blessure
+```{r}
+usagers_test <- usagers %>%
+  mutate(mort = case_when(grav == "2" ~ "1",
+                          TRUE ~ "0")) %>%
+  mutate(hopital = case_when(grav == "3" ~ "1",
+                             TRUE ~ "0")) %>%
+  mutate(majeur = case_when(an_nais >= 2000 ~ "1",
+                            TRUE ~ "0")) %>%
+  mutate(mineur = case_when(an_nais < 2000 ~ "1",
+                            TRUE ~ "0")) %>%
+  mutate(traverse = case_when(actp == "3" ~ "1",
+                              TRUE ~ "0"))
+```
+
+Changer le type de données pour pouvoir les sommer
+```{r}
+usagers_test$mort <- as.integer(usagers_test$mort)
+usagers_test$hopital <- as.integer(usagers_test$hopital)
+usagers_test$majeur <- as.integer(usagers_test$majeur)
+usagers_test$mineur <- as.integer(usagers_test$mineur)
+usagers_test$traverse <- as.integer(usagers_test$traverse)
+```
+
+
+Nombre de morts / hospitalisés / majeurs / mineurs / piétons traversants
+```{r}
+usagers_mort <-
+  aggregate(usagers_test$mort,
+            by = list(Num_Acc = usagers_test$Num_Acc),
+            FUN = sum)
+usagers_hopital <-
+  aggregate(
+    usagers_test$hopital,
+    by = list(Num_Acc = usagers_test$Num_Acc),
+    FUN = sum
+  )
+usagers_majeur <-
+  aggregate(usagers_test$majeur,
+            by = list(Num_Acc = usagers_test$Num_Acc),
+            FUN = sum)
+usagers_mineur <-
+  aggregate(usagers_test$mineur,
+            by = list(Num_Acc = usagers_test$Num_Acc),
+            FUN = sum)
+usagers_traverse <-
+  aggregate(
+    usagers_test$traverse,
+    by = list(Num_Acc = usagers_test$Num_Acc),
+    FUN = sum
+  )
+```
+
+Ajouter les données de morts / hospitalisés / majeurs / mineurs / piétons traversants dans les caractéristiques
+```{r}
+caract_new <-
+  merge(caract_new, usagers_mort, by = "Num_Acc") %>% rename(mort = x)
+caract_new <-
+  merge(caract_new, usagers_hopital, by = "Num_Acc") %>% rename(hopital = x)
+caract_new <-
+  merge(caract_new, usagers_majeur, by = "Num_Acc") %>% rename(majeur = x)
+caract_new <-
+  merge(caract_new, usagers_mineur, by = "Num_Acc") %>% rename(mineur = x)
+caract_new <-
+  merge(caract_new, usagers_traverse, by = "Num_Acc") %>% rename(traverse = x)
+```
+
+
+Jointure entre le dataset des caractéristiques et les lieux
+```{r}
+acc <-
+  merge(caract_new, lieux[, c("Num_Acc", "catr", "surf", "situ", "vma")], by =
+          "Num_Acc")
+```
+
+
+Nettoyage des données
+```{r}
+rm(
+  usagers,
+  usagers_hopital,
+  usagers_majeur,
+  usagers_mineur,
+  usagers_mort,
+  usagers_test,
+  usagers_traverse
+)
+acc_ok <- acc %>% select(!adr)
+rm(caract_new, lieux, acc)
+```
+
+##Exploration des donnees
+```{r}
+mois_num <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+mois_abr <- c("J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D")
+```
+
+Graphique : Nombre d'accidents avec pietons par mois en 2020
+```{r}
+AgregDate_p <-
+  acc_ok %>% group_by(mois, jour) %>% summarise (nb = sum(pieton), mean = mean(pieton))
+
+ggplot(AgregDate_p, aes(mois, nb)) + geom_bar(stat = "identity",
+                                              width = 0.5,
+                                              fill = wes_palette("Zissou1", n = 1)) +
+  labs(title = "Graphique 1",
+       subtitle = "Nombre d'accidents avec piétons par mois en 2020",
+       caption = "Source : data.gouv.fr") + scale_x_continuous(
+         breaks = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+         labels = c("J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D")
+       ) +
+  theme(axis.text.x = element_text(angle = 65, vjust = 0.6))
+```
+
+Graphique : Nombre d'accidents avec voiture par mois en 2020
+```{r}
+AgregDate_v <-
+  acc_ok %>% group_by(mois, jour) %>% summarise (nb = sum(voiture), mean = mean(voiture))
+
+ggplot(AgregDate_v, aes(mois, nb)) + geom_bar(stat = "identity",
+                                              width = 0.5,
+                                              fill = wes_palette("Zissou1", n = 1)) +
+  labs(title = "Graphique 2",
+       subtitle = "Nombre d'accidents avec voiture par mois en 2020",
+       caption = "Source : data.gouv.fr") + scale_x_continuous(breaks =
+                                                                            mois_num , labels = mois_abr) +
+  theme(axis.text.x = element_text(angle = 65, vjust = 0.6))
+```
+
+Graphique : Nombre d'accidents mortels par mois en 2020
+```{r}
+AgregDate_m <-
+  acc_ok %>% group_by(mois, jour) %>% summarise (nb = sum(mort), mean = mean(mort))
+
+ggplot(AgregDate_m, aes(mois, nb)) + geom_bar(stat = "identity",
+                                              width = 0.5,
+                                              fill = wes_palette("Zissou1", n = 1)) +
+  labs(title = "Graphique 3",
+       subtitle = "Nombre d'accidents mortels par mois en 2020",
+       caption = "Source: data.gouv.fr") + scale_x_continuous(breaks =
+                                                                            mois_num , labels = mois_abr) +
+  theme(axis.text.x = element_text(angle = 65, vjust = 0.6))
+```
+
+
+Graphique : Répartition des accidents selon la Vitesse maximale autorisée
+```{r}
+AgregDate_vma <-
+  acc_ok %>% group_by(vma) %>% summarize(count = n_distinct(Num_Acc))
+
+ggplot(AgregDate_vma, aes(vma, count)) + geom_bar(stat = "identity",
+                                                  width = 5,
+                                                  fill = wes_palette("GrandBudapest1", n = 1)) +
+  labs(title = "Graphique 4",
+       subtitle = "Répartition des accidents selon la Vitesse maximale autorisée",
+       caption = "Source: data.gouv.fr") + scale_x_continuous(limits = c(0,150)) +
+  theme(axis.text.x = element_text(angle = 65, vjust = 0.6))
+```
+
+
+Graphique : Pourcentage d'accidents finissant à l'hopital par mois
+```{r}
+AgregDate_hopital <-
+  acc_ok %>% group_by(mois) %>% summarize(count = (n_distinct(hopital) /
+                                                     47744) * 100)
+
+ggplot(AgregDate_hopital, aes(mois, count)) + geom_bar(stat = "identity", width = 0.75, fill =
+                                                         wes_palette("Royal2", n = 1)) +
+  labs(title = "Graphique 6",
+       subtitle = "Pourcentage d'accident finissant à l'hopital par mois",
+       caption = "Source: data.gouv.fr") +scale_x_continuous(breaks =
+                                                                           mois_num , labels = mois_abr) +
+  theme(axis.text.x = element_text(angle = 65, vjust = 0.6))
+```
+
+Graphique : Treemap : Pourcentage d'accidents finissant à l'hopital par jour du mois selon la Vitesse maximale autorisée sur le lieu de l’accident
+```{r}
+AgregDate_vma <-
+  acc_ok %>% group_by(vma) %>% summarize(count = n_distinct(Num_Acc))
+treemap(
+  AgregDate_vma,
+  index = "vma",
+  vSize = "count",
+  type = "index",
+  palette = wes_palette("Darjeeling1",n=5),
+  title = " Vitesse maximale (%) ",
+  title.legend ="",
+  fontfamily.labels = "serif"
+  )
+```
+
+Graphique : Treemap : Météo durant l'accident
+```{r}
+AgregDate_atm <-acc_ok %>% group_by(atm) %>% summarize(count = n_distinct(Num_Acc))
+AgregDate_atm <- AgregDate_atm %>% filter(!(atm=='-1'))
+AgregDate_atm <-AgregDate_atm %>% mutate(atmok = case_when(atm == "1" ~ "Normale", 
+                                                           atm == "2"~ "Pluie légère", 
+                                                           atm ==  "3" ~ "Pluie forte",  
+                                                           atm == "4" ~  "Neige",  
+                                                           atm == "5" ~  "Brouillard",
+                                                           atm == "6" ~  "Vent fort",
+                                                           atm == "7" ~  "Temps éblouissant",
+                                                           atm == "8" ~  "Temps couvert",
+                                                           atm == "9" ~  "Autre"))
+
+treemap(
+  AgregDate_atm,
+  index = "atmok",
+  vSize = "count",
+  type = "index",
+  palette = wes_palette("Darjeeling1",n=5),
+  title = "Météo pendant l'accident",
+  title.legend ="Pourcentage d'accident finissant à l'hopital par jour du mois",
+  fontfamily.labels = "serif"
+)
+```
+
+Graphique 3:Nombre d'accidents mortels par mois en 2020
+```{r}
+AgregDate_m <-acc_ok %>% group_by(mois, jour) %>% summarise (nb = sum(mort), mean = mean(mort)) 
+
+ggplot(AgregDate_m, aes(x=mois, y=nb)) +  geom_bin2d(binwidth=c(0.5,1))  + scale_fill_gradientn( colours=wes_palette("Zissou1", n = 5)) + geom_smooth(method=lm,se=FALSE, color="darkgreen") +labs(title = "Graphique 3",subtitle = "Nombre d'accidents mortels par mois en 2020",caption = "Source: data.gouv") + scale_x_continuous(breaks = mois_num , labels = mois_abr) + theme(axis.text.x =element_text(angle = 65, vjust = 0.6))
+```
+
+# CARTOGRAPHIE
+
+## 1.Préparation des données :
+
+### Travail sur le tableur CSV du nombre d'accident : 
+* Enlever les données hors France métropolitaine : supprimer les lignes ou le numéro de commune qui commencent par ...
+```{r}
+acc_okok <- acc_ok %>% filter(!(dep=='971'|dep== '972' |dep== '973' |dep=='974'|dep=='975'|dep=='976'|dep=='977'|dep=='978'|dep=='984'|dep== '986'|dep== '987'|dep=='988'|dep=='989'))
+```
+
+* Transformer notre fichier plat en fichier spatial (on veut transformer les données en objet SF) : Pour cela il nous faut une longitude et une latitude. Elle est déja renseignée dans la table acc_ok dans 2 champs différents.
+
+  + Etapes pour changer le séparateur de latitude :
+```{r}
+acc_okok = acc_okok %>% separate(col = lat,into =c("lat1","lat2"),sep = ",")
+acc_okok = acc_okok %>% unite("latok",lat1,lat2,sep = ".")
+```
+
+  + Etapes pour changer le séparateur de latitude 
+```{r}
+acc_okok = acc_okok %>% separate(col = long,into =c("long1","long2"),sep = ",")
+acc_okok = acc_okok %>% unite("longok",long1,long2,sep = ".")
+```
+
+  + Etape pour passer d'un fichier plat à un ficher spatial
+```{r}
+acc_ok_sf = st_as_sf(acc_okok, coords=c("longok","latok"), crs=4326)
+acc_spatial<- st_transform(acc_ok_sf, 2154)
+```
+
+### Travail sur les découpages administratifs :
+
+* Importation des limites des arrondissements et garder uniquement les arrondissements de Paris et sa petite couronne 
+```{r}
+ardt <- st_read(dsn = "ARRONDISSEMENT.shp", stringsAsFactors = FALSE) 
+
+#garder que les arrondissements de Paris : 
+ardtparis <- ardt %>% filter(CODE_DEPT == '75'| CODE_DEPT == '92' | CODE_DEPT == '93'| CODE_DEPT == '94')
+
+```
+
+* Importation des limites des communes et garder uniquement les communes de Paris et sa petite couronne 
+```{r}
+com <- st_read(dsn = "COMMUNE.shp", stringsAsFactors = FALSE) 
+comparis <- com %>% filter(CODE_DEPT == '75'| CODE_DEPT == '92' | CODE_DEPT == '93'| CODE_DEPT == '94')
+comparis<- st_transform(comparis, 2154)
+```
+
+* Importation des limites des iris et garder uniquement les IRIS de Paris et sa petite couronne
+```{r}
+iris <- st_read(dsn = "CONTOURS-IRIS.shp", stringsAsFactors = FALSE)
+irisparis <- iris %>% filter(grepl("^75", INSEE_COM)| grepl("^92", INSEE_COM) | grepl("^93", INSEE_COM)| grepl("^94", INSEE_COM))
+plot(irisparis["IRIS"])
+irisparis<- st_transform(irisparis, 2154)
+```
+
+## 2. Représentation cartographique
+### Vue globale des accidents en France : carte interactive
+```{r}
+pal = colorNumeric("Rushmore", domain = acc_ok_sf$vma)
+leaflet(data = acc_ok_sf) %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircles(col = ~pal(catr), opacity = 0.9) %>% 
+  setView(lng = 2.442971, 46.913021, zoom = 6) %>% 
+  addMiniMap()
+
+```
+
+### Comment sont répartis les accidents à paris ?
+```{r}
+acc_spatialIRISPARIS <- st_join(irisparis, acc_spatial)
+parisokkk <- acc_spatialIRISPARIS %>% filter(dep == '75'| dep == '92' | dep == '93'| dep == '94')
+
+okm <-parisokkk %>% group_by(CODE_IRIS) %>% summarise(accidents=n())
+choroLayer(
+  x = okm, 
+  var = "accidents", 
+  breaks = c(1, 5, 10, 50, 100, 300),
+  col = c("#1a9641", "#a6d96a", "#ffffbf", "#fdae61", "#d7191c"),
+  border = "#F9FAFD",
+  lwd = 0.1,
+  legend.title.txt = "Nombre d'accident :")
+  barscale(size = 5)
+  title(main = "Répartition du nb d'accidents(iris petite couronne Paris 2020")
+```
+
+### Carte catégorisée dans une grille
+* Faire une grille 
+```{r}
+grille <- st_make_grid(
+  comparis,
+  cellsize = 500,
+  crs = 2154, 
+  what = "polygons",
+  square = FALSE)
+```
+
+* Garder uniquement les carreaux qui sont sur notre zone d'étude (Paris)
+```{r}
+grille <- st_sf(grille)
+grille <- grille %>% mutate(grilleok = lengths(st_intersects(grille, comparis)))
+grille <- grille %>% filter(!grilleok=='0')
+```
+
+* Joindre les informations de la table des accidents dans la grille (jointure spatiale)
+```{r}
+acc_spatial <- st_join(grille, acc_spatial) %>% mutate(accidenthiver = case_when(mois == 2 ~ '1' ,mois == 1 ~ '1', mois == 3 ~ '1', mois == 12 ~'1' , TRUE  ~ '0'))
+```
+
+```{r} 
+grille <- st_make_grid(
+    comparis,
+    cellsize = 500,
+    crs = 2154, 
+    what = "polygons",
+    square = FALSE)
+  
+  grille <- st_sf(grille)
+  grille <- grille %>% mutate(grilleok = lengths(st_intersects(grille, comparis)))
+  grille <- grille %>% filter(!grilleok=='0')
+  plot(grille)
+  acc_spatial_gri <- st_join(grille, acc_spatial)
+```
+
+Garder que les accident qui impliquent au moins un piéton 
+```{r}
+ acc_spatial_gr <- acc_spatial_gri %>% filter(pieton == '1')
+  acc_spatial_gr <- grille %>% mutate(grilleok = lengths(st_intersects(grille, acc_spatial)))
+  
+  choroLayer(
+    x = acc_spatial_gr, 
+    var = "grilleok", 
+    breaks = c(1,20, 50, 100, 300),
+    col = c("#1a9641", "#a6d96a", "#ffffbf", "#fdae61", "#d7191c"),
+    border = "#F9FAFD",
+    lwd = 0.1,
+    legend.pos = "topleft",
+    legend.title.txt = "Nombre de piétons :")
+  
+  layoutLayer(title = "Répartition du nombre d'accidents implicant un piéton ", 
+              sources = "Data.gouv.fr",  
+              author = "L.Hennenfent, N.nosland, J.mortier, 2020",  north = TRUE, 
+              frame = FALSE, col = "#cdd2d4", coltitle = "#8A5543")
+```
+
+* Réalisation cartographique 
+### Représentation du nombre d'accidents en fonction des saisons
+Dans un premier temps, il a fallu créer une nouvelle colonnes pour chaque saison et y attribuer des valeurs entre 1 et 0 en fonction de la saison où a eu  lieu l'accident. Par exemple, si l'accident a eu lieu en décembre, on va affecter une valeur de 1 à la colonne de décembre et une valeur de 0 à la colonne d'été, printemps et automne.
+```{r}
+acc_spatialIRISPARIShiver <-parisokkk %>% mutate(accidenthiver = case_when(mois == 2 ~ '1' ,mois == 1 ~ '1', mois == 3 ~ '1', mois == 12 ~'1' , TRUE  ~ '0'))
+acc_spatialIRISPARIShiver$accidenthiver <- as.numeric(acc_spatialIRISPARIShiver$accidenthiver)
+
+
+acc_spatialIRISPARISete <-parisokkk %>% mutate(accidentete2 = case_when(mois == 8 ~ '1' ,mois == 9 ~ '1', mois ==  7 ~ '1', TRUE  ~ '0'))
+acc_spatialIRISPARISete$accidentete2 <- as.numeric(acc_spatialIRISPARISete$accidentete2)
+
+
+acc_spatialIRISPARISprint <-parisokkk %>% mutate(accidentprintemps2 = case_when(mois == 4 ~ '1' ,mois == 5 ~ '1', mois ==  6 ~ '1', TRUE  ~ '0'))
+acc_spatialIRISPARISprint$accidentprintemps2 <- as.numeric(acc_spatialIRISPARISprint$accidentprintemps2)
+
+
+acc_spatialIRISPARISauto <-parisokkk %>% mutate(accidentautomne2 = case_when(mois == 10 ~ '1' ,mois == 11 ~ '1',TRUE  ~ '0'))
+acc_spatialIRISPARISauto$accidentautomne2 <- as.numeric(acc_spatialIRISPARISauto$accidentautomne2)
+```
+
+Dans un second temps nous avons compté le nombre d'accidents qu'il y a eu pour chaque saison par iris. Pour cela, nous avons donc regroupé l'information à l'aide d'un groupe_by puis nous avons résumé cette information avec un summarise (ce qui nous a permis de faire la somme du nombre d'accident par IRIS).
+```{r}
+acc_spatialIRISPARIShiver2 <-acc_spatialIRISPARIShiver %>% group_by(CODE_IRIS) %>% summarise(accidenthiver= sum(accidenthiver!= 0))
+plot(acc_spatialIRISPARIShiver["accidenthiver"])
+
+acc_spatialIRISPARISete2 <-acc_spatialIRISPARISete %>% group_by(CODE_IRIS) %>% summarise(accidentete2= sum(accidentete2!= 0))
+plot(acc_spatialIRISPARISete["accidentete2"])
+
+acc_spatialIRISPARISprint2 <-acc_spatialIRISPARISprint %>% group_by(CODE_IRIS) %>% summarise(accidentprintemps2= sum(accidentprintemps2!= 0))
+plot(acc_spatialIRISPARISprint["accidentprintemps2"])
+
+acc_spatialIRISPARISauto2 <-acc_spatialIRISPARISauto %>% group_by(CODE_IRIS) %>% summarise(accidentautomne2= sum(accidentautomne2!= 0))
+plot(acc_spatialIRISPARISauto["accidentautomne2"])
+```
+
+La dernière étape fut d'afficher le résultat en 4 cartes (1 carte = 1 saison) :
+```{r}
+par(mar=c(0,0,0.9,0))
+
+par(mfrow=c(2,3))
+
+choroLayer(
+  x = acc_spatialIRISPARIShiver2, 
+  var = "accidenthiver", 
+  breaks = c(0, 1, 3, 5, 10, 50),
+  border ="white",
+  col = c("#1a9641", "#a6d96a", "#ffffbf", "#fdae61", "#d7191c"),
+  legend.title.txt = "nombre total")
+  barscale(size = 5)
+  title(main = "Nombre d'accidents en hiver")
+
+choroLayer(
+  x = acc_spatialIRISPARISete2, 
+  var = "accidentete2", 
+  breaks = c(0, 1, 3, 5, 10, 50),
+  border ="white",
+  col = c("#1a9641", "#a6d96a", "#ffffbf", "#fdae61", "#d7191c"),
+  legend.title.txt = "nombre total")
+  barscale(size = 5)
+  title(main = "Nombre d'accidents en été")
+
+choroLayer(
+  x = acc_spatialIRISPARISprint2, 
+  var = "accidentprintemps2", 
+  breaks = c(0, 1, 3, 5, 10, 50),
+  border ="white",
+  col = c("#1a9641", "#a6d96a", "#ffffbf", "#fdae61", "#d7191c"),
+  legend.title.txt = "nombre total")
+  barscale(size = 5)
+  title(main = "Nombre d'accidents au printemps")
+
+
+choroLayer(
+  x = acc_spatialIRISPARISauto2, 
+  var = "accidentautomne2", 
+  breaks = c(0, 1, 3, 5, 10, 50),
+  border ="white",
+  col = c("#1a9641", "#a6d96a", "#ffffbf", "#fdae61", "#d7191c"),
+  legend.title.txt = "nombre total")
+  barscale(size = 5)
+  title(main = "Nombre d'accidents en automne")
+  
+```
+
+### Carte bivariée présentant le nombre d'accidents en fonction du niveau de vie à Paris
+* Importation du tableur sur le niveau de vie 
+```{r}
+niveau_vie <- read.csv("BASE_TD_FILO_DEC_IRIS_2018.csv", encoding="UTF-8", sep=";")
+```
+
+* Jointure attributaire entre le CSV sur le revenu médian et le SHP où il y a l'informaton du nombre d'accidents par IRIS 
+```{r}
+bivar <- merge(okm, niveau_vie, by.x = c("CODE_IRIS"), by.y = c("X.U.FEFF.IRIS"))
+```
+
+* Reclassification du niveau de vie de A à C (A = Niveau de vie faible, C =  niveau de vie élevé)
+```{r}
+bivar <-bivar %>% mutate(reclassniv = case_when(niv_vie <= 20000 ~ 'A', niv_vie >=20001 & niv_vie <= 35000~ 'B', niv_vie >=  35001 ~ 'C'))
+```
+
+* Reclassification du nombre d'accident de 1 à 3 (1 = nombre d'accident faible, 3 = nombre d'accident élevé)
+```{r}
+bivar <- bivar %>% mutate(reclassacc = case_when(accidents <= 10 ~ '1', accidents >=11 & accidents <= 50~ '2', accidents >=  51 ~ '3'))
+```
+
+* On réunit les deux champs (reclassification du niveau de vie et reclassification du nombre d'accident)
+```{r}
+bivar$concatok<- paste(bivar$reclassacc, bivar$reclassniv, sep = "")
+```
+
+* On reclassifie le champs qui vient d'être regroupé afin que ce soit compréhensible dans la légende 
+```{r}
+bivar <-bivar %>% mutate(bivarok = case_when(concatok == "3C" ~ "Niveau de vie élevé et accidents élevés", 
+                                             concatok == "3B"~ "Niveau de vie moyen et accidents élevés", 
+                                             concatok ==  "3A" ~ "Niveau de vie faible et accidents élevés",  
+                                             concatok == "2C" ~  "Niveau de vie élevé et accidents moyen",  
+                                             concatok == "2B" ~  "Niveau de vie moyen et accidents moyen",
+                                             concatok == "2A" ~  "Niveau de vie faible et accidents moyen",
+                                             concatok == "1C" ~  "Niveau de vie élevé et accidents faible",
+                                             concatok == "1B" ~  "Niveau de vie moyen et accidents faible",
+                                             concatok == "1A" ~  "Niveau de vie faible et accidents faible"))
+```
+
+* Existe t-il un lien entre le niveau de vie et les accidents corporels dans Paris et sa petite couronne ?
+```{r}  
+typoLayer(bivar, var = "bivarok", 
+          border = "#F9FAFD",
+          lwd = 0.5,
+          col = c("#d18975", "#8fd175", "#3f2d54", "#75b8d1", "#2d543d", "#c9d175", "#d1ab75", "#d175b8", "#758bd1"),
+          
+          legend.title.txt = "Niveau de vie et accident")
+
+layoutLayer(title = "Répartition des accidents en fonction du niveau de vie en 2020", 
+          sources = "INSEE - https://data.gouv.fr/",  
+          author = "L.Hennenfent, N.nosland, J.Mortier, 2020",  north = TRUE, 
+          frame = FALSE, col = "#cdd2d4", coltitle = "#8A5543")
+
+```
+* Représentation des accidents avec piétons dans Paris et sa petite couronne
+```{r} 
+acc_spatialIRISPARIS <- st_join(irisparis, acc_spatial)
+parisokkk <- acc_spatialIRISPARIS %>% filter(dep == '75'| dep == '92' | dep == '93'| dep == '94')
+
+iris_piet <-parisokkk %>% group_by(CODE_IRIS) %>% summarise(pieton_imp = sum(pieton))
+iris_piet <-iris_piet %>% mutate(cat = case_when(pieton_imp == 0  ~ 1 ,
+                                                 pieton_imp > 0 & pieton_imp<= 3 ~ 2,
+                                                 pieton_imp > 3 ~ 3,
+                                                 TRUE  ~ 0))
+iris_piet$cat <- as.numeric(iris_piet$cat)
+typoLayer(iris_piet, var = "cat", 
+          border = "#F9FAFD",
+          lwd = 0.5,
+          col = c("red", "orange", "yellow"),
+          legend.pos = "topleft",
+          legend.title.txt = "Nombre de piéton")
+
+layoutLayer(title = "Répartition des accidents impliquant un piéton en 2020", 
+            sources = "data.gouv.fr",  
+            author = "L.Hennenfent, N.nosland, J.mortier, 2020",  north = TRUE, 
+            frame = FALSE, col = "#cdd2d4", coltitle = "#8A5543")
+
+```
+
+
+
+
+
