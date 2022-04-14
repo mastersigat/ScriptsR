@@ -1,0 +1,625 @@
+---
+title: "Projet R | Paris Wi-Fi - Utilisation des hotspots du réseau"
+author: "Orlane, Pablo et Tom"
+date: "`r Sys.Date()`"
+output: html_document
+---
+<style type = "text/css">
+  body {
+  font-size : 14pt;
+  font-family : "Helvetica"
+  }
+</style>
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 14,
+  fig.height = 12
+)
+options(encoding="UTF-8")
+```
+
+```{css, echo = FALSE}
+pre {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+pre[class] {
+  max-height: 300px;
+}
+```
+
+# Préparation du script
+
+## Packages & librairies
+
+Installation et import des différentes librairies nécessaires au fonctionnement du script.
+
+```{r install-packages, warning=FALSE}
+#install.packages("remotes") 
+#install.packages(remotes)
+#library(remotes)
+#remotes::install_github("davidsjoberg/ggsankey") # Package externe, il faut aller le chercher dans une répertoire GitHub à la main.
+```
+
+```{r import-library, warning=FALSE}
+library(rmarkdown)
+library(tidyverse)
+library(cartography)
+library(ggplot2)
+library(cowplot)
+library(treemapify)
+library(RColorBrewer)
+library(sf)
+library(geojsonsf)
+library(ggsankey)
+```
+
+## Import des données
+
+Données de **Paris Wi-Fi - Utilisation des hotspots du réseau**, issues de [Paris | Data](https://opendata.paris.fr/explore/dataset/paris-wi-fi-utilisation-des-hotspots-paris-wi-fi/information/?disjunctive.incomingzonelabel&disjunctive.incomingnetworklabel&disjunctive.device_portal_format&disjunctive.device_constructor_name&disjunctive.device_operating_system_name_version&disjunctive.device_browser_name_version&disjunctive.userlanguage&basemap=jawg.matrix&location=13,48.86056,2.35253){target="_blank"}.
+
+
+```{r import-data, warning=FALSE, cache=TRUE}
+wifi <- geojsonsf::geojson_sf('paris-wi-fi-utilisation-des-hotspots-paris-wi-fi.geojson')
+```
+
+**`r nrow(wifi)`** lignes et **`r length(wifi)`** colonnes importées.
+
+Données des **Contours... IRIS**, issues de l'[IGN](https://geoservices.ign.fr/contoursiris). 
+
+```{r import-data2, warning=FALSE, cache=TRUE}
+IRIS <- st_read("CONTOURS-IRIS.shp", stringsAsFactors = FALSE)
+```
+
+**`r nrow(IRIS)`** lignes et **`r length(IRIS)`** colonnes importées.
+
+# Préparation des données et représentations
+
+## Reprojection et corrections des données de **Paris Wi-Fi - Utilisation des hotspots du réseau**
+
+```{r reprojection, warning=FALSE, cache=TRUE}
+wifi <- st_transform(wifi, 2154)
+
+wifi <- wifi %>% mutate(userlanguage = case_when(userlanguage == "Chinois simplifiÃ©" | userlanguage == "Chinois simplifiâ€š" ~ "Chinois simplifié",
+                                                                   userlanguage == "FranÃ§ais" | userlanguage == "Franâ€¡ais" ~ "Français",
+                                                                   userlanguage == "CorÃ©en" | userlanguage == "Corâ€šen" ~ "Coréen",
+                                                                   userlanguage == "IndonÃ©sien" | userlanguage == "Indonâ€šsien" ~ "Indonésien",
+                                                                   userlanguage == "ThaÃ¯landais" | userlanguage == "Thaâ€¹landais" ~ "Thaïlandais",
+                                                                   userlanguage == "NÃ©erlandais" | userlanguage == "Nâ€šerlandais" ~ "Néerlandais",
+                                                                   userlanguage == "#N/A" ~ NA_character_,
+                                                                   TRUE ~ as.character(userlanguage)),
+                                code_site = case_when(code_site == "'PW0125" ~ "PW0125",
+                                                       TRUE ~ code_site),
+                                code_site = na_if(code_site, "#N/A"))
+```
+
+## Sélection des IRIS parisiens
+```{r selection, warning=FALSE, cache=TRUE}
+IRIS <- IRIS %>% filter(grepl("^75", INSEE_COM))
+```
+
+## Graphiques
+
+### Sript pour la préparation du graphique *Vue des sessions par jour de la semaine*.
+
+```{r chart-1_script, warning=FALSE}
+#Tranformation en simple dataframe pour éviter d'alourdir les calculs.
+wifidataframe <- as.data.frame(wifi)
+
+#Ajout d'un champ dans un format date.
+wifidataframe$date <- as.Date(wifidataframe$datetime)
+
+#Aggrégation du nombre de sessions, de la durée moyenne des sessions et des données échangées par date.
+graph_01 <- wifidataframe %>% select(date, duration, donnee_sortante_gigaoctet, donnee_entrante_go) %>%
+  group_by(date) %>%
+  summarise(NbSessions = n(),
+            duree_session_minutes = mean(duration / 60),
+            donnees_sortante_GO = mean(donnee_sortante_gigaoctet),
+            donnees_entrante_GO = mean(donnee_entrante_go))
+
+#Ajout d'un champ contenant le jour de la semaine.
+graph_01$jour <- weekdays.Date(graph_01$date)
+
+#Aggrégation du nombre de sessions, de la durée moyenne des sessions et des données échangées par jour de la semaine.
+graph_1 <- graph_01 %>% select(jour, NbSessions, duree_session_minutes, donnees_sortante_GO, donnees_entrante_GO) %>%
+  group_by(jour) %>%
+  summarise(NbSessions = mean(NbSessions),
+            duree_session_minutes = mean(duree_session_minutes),
+            donnees_sortante_GO = mean(donnees_sortante_GO),
+            donnees_entrante_GO = mean(donnees_entrante_GO))
+
+#Tri selon les jours de la semaine.
+graph_1$jour <- ordered(graph_1$jour, levels=c("lundi", "mardi", "mercredi", "jeudi", 
+                                             "vendredi", "samedi", "dimanche"))
+
+graph_1 <- graph_1 %>% arrange(jour)
+
+head(graph_1)
+```
+
+Jour ayant le temps de session moyen le plus important (**`r round(max(graph_1$duree_session_minutes), 2)`** minutes) : **`r graph_1[which.max(graph_1$duree_session_minutes), ][1, 1]`** <br />
+
+Jour ayant la quantité moyenne de données téléchargées la plus importante (**`r round(max(graph_1$donnees_entrante_GO), 2)`** GO) : **`r graph_1[which.max(graph_1$donnees_entrante_GO), ][1, 1]`**.
+
+### Datavisualisation de la *Vue des sessions par jour de la semaine*
+
+```{r chart-1_dataviz, warning=FALSE}
+# Premier partie du premier small multiple
+# Nombre de sessions par jour
+graph_1.1 <- ggplot(graph_1, aes(x=jour, y=NbSessions, fill=jour)) + 
+  geom_bar(stat="identity", show.legend = FALSE) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values=c("#6998AB", "#6998AB", "#6998AB", "#6998AB", "#6998AB", "#1A374D", "#1A374D"))+
+  labs(x ="" , y = "Nombre de sessions moyen")
+
+# Deuxième partie du premier small multiples
+# Duration moyenne des sessions
+graph_1.2 <- ggplot(graph_1, aes(x=jour, y=duree_session_minutes, fill=jour)) + 
+  geom_bar(stat="identity", show.legend = FALSE) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values=c("#6998AB", "#6998AB", "#6998AB", "#6998AB", "#6998AB", "#1A374D", "#1A374D"))+
+  labs(x ="" , y = "Durée de session moyenne (minutes)")
+
+# Troisième partie du premier small multiple
+# Moyenne des données téléchargées
+graph_1.3 <- ggplot(graph_1, aes(x=jour, y=donnees_entrante_GO, fill=jour)) + 
+  geom_bar(stat="identity", show.legend = FALSE) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values=c("#6998AB", "#6998AB", "#6998AB", "#6998AB", "#6998AB", "#1A374D", "#1A374D"))+
+  labs(x ="" , y = "Données entrantes moyennes (GO)")
+
+# Regroupement des 3 parties du premier small multiple
+p <- plot_grid(graph_1.1, graph_1.2, graph_1.3,
+               nrow=1, ncol=3) # , labels=c('A', 'B', 'C')  -> Pour labelliser si nécessaire
+
+
+# Titre du premiere small multiple
+title_graph1 <- ggdraw() + draw_label("Vue des sessions par jour de la semaine", fontface='bold')
+
+#Print du graphique
+plot_grid(title_graph1, p, ncol=1, rel_heights=c(0.1, 1))
+```
+
+### Script pour la préparation du graphique *Utilisateurs étrangers principaux*.
+
+```{r chart-2_script, warning=FALSE}
+#Aggrégation du nombre de sessions par language utilisateur et création d'un champ pourcentage.
+graph_2 <- wifidataframe %>% select(userlanguage) %>%
+  group_by(userlanguage) %>%
+  summarise(NbSessions = n()) %>%
+  mutate(Pourcentage = round((NbSessions/sum(NbSessions)*100), 2)) %>%
+  arrange(desc(Pourcentage)) %>%
+  mutate(Pourcentage_str = str_c(Pourcentage, '%'))
+
+head(graph_2)
+```
+
+**`r as.integer(nrow(graph_2)-1)`** nationalités (sans compter les langages utilisateurs *Not Available*), dont les **5** plus représentées sont :
+
+<img src="`r "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Flag_of_France_%281794%E2%80%931815%2C_1830%E2%80%931958%29.svg/320px-Flag_of_France_%281794%E2%80%931815%2C_1830%E2%80%931958%29.svg.png"`" width="40" heigth="26.625" valign="center"> <img src="`r "https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Flag_of_the_United_Kingdom_%283-5%29.svg/320px-Flag_of_the_United_Kingdom_%283-5%29.svg.png"`" width="40" heigth="26.625" valign="center"> <img src="`r "https://upload.wikimedia.org/wikipedia/commons/9/9a/Flag_of_Spain.svg"`" width="40" heigth="26.625" valign="center"> <img src="`r "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f3/Flag_of_Russia.svg/320px-Flag_of_Russia.svg.png"`" width="40" heigth="26.625" valign="center"> <img src="`r "https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/Flag_of_Germany.svg/320px-Flag_of_Germany.svg.png"`" width="40" heigth="26.625" valign="center">
+
+### Datavisualisation des *Utilisateurs étrangers principaux*
+
+```{r chart-2_dataviz, warning=FALSE}
+#Filtre des utilisateurs français et aggrégation du nombre de sessions par language utilisateur et création d'un champ pourcentage.
+graph_2.1 <- graph_2 %>% filter(userlanguage != "Français") %>%
+  mutate(Pourcentage = round((NbSessions/sum(NbSessions)*100), 2)) %>%
+  filter(Pourcentage > 1) %>%
+  arrange(desc(Pourcentage)) %>%
+  mutate(Pourcentage_str = str_c(Pourcentage, '%'))
+
+ggplot(graph_2.1, aes(area=NbSessions, fill=userlanguage, label = paste(userlanguage, Pourcentage_str, sep = "\n"))) + 
+  geom_treemap() +
+  geom_treemap_text(colour = "white",
+                    place = "centre",
+                    size = 15) +
+  theme(legend.title=element_blank(), plot.title = element_text(hjust = 0.5, size = 16), legend.position = "none") +
+  ggtitle("Utilisateurs étrangers principaux")
+```
+
+### Script pour la préparation du graphique *Comparaison de la consommation de données et du temps de session par langue*
+
+```{r chart-3_script, warning=FALSE}
+#Aggrégation de la durée de session moyenne et des données échangées moyenne par langue utilisateur.
+graph_3 <- wifidataframe %>% select(userlanguage, duration, donnee_sortante_gigaoctet, donnee_entrante_go) %>%
+  group_by(userlanguage) %>%
+  summarise(duree_session_minutes = mean(duration / 60),
+            donnees_sortante_GO = mean(donnee_sortante_gigaoctet),
+            donnees_entrante_GO = mean(donnee_entrante_go)) %>%
+  drop_na() %>%
+  arrange(duree_session_minutes) %>%
+  mutate(userlanguage = factor(userlanguage, levels = userlanguage))
+
+head(graph_3)
+```
+
+Les plus gros consommateurs de données sont les utilisateurs avec la langue **`r graph_3[which.max(graph_3$donnees_entrante_GO), ][1, 1]`** configurée. En moyenne par session, ils consomment **`r round(max(graph_3$donnees_entrante_GO), 2)`** GO de données. <br />
+
+Les utilisateurs les plus longtemps connectés sont les utilisateurs avec la langue **`r graph_3[which.max(graph_3$duree_session_minutes), ][1, 1]`** configurée. En moyenne par session, ils restent connectés **`r round(max(graph_3$duree_session_minutes), 2)`** minutes.
+
+### Datavisualisation de la *Comparaison de la consommation de données et du temps de session par langue*
+
+```{r chart-3_dataviz, warning=FALSE}
+colourCount <- nrow(graph_3)
+getPalette <- colorRampPalette(brewer.pal(9, "Set1"))
+
+# Premiere partie du deuxième small multiple
+# Duree Session en minutes par langue
+graph_3.1 <- ggplot(graph_3, aes(x=userlanguage, y=duree_session_minutes, fill=userlanguage)) + 
+  geom_bar(stat="identity", show.legend = FALSE, fill=getPalette(colourCount)) +
+  theme_minimal() +
+  theme(axis.title.y = element_text(size=8, margin = margin(r = 18)))+
+  background_grid(FALSE) +
+  labs(x ="" , y = "Durée Session (min)") +
+  coord_flip()
+
+# Deuxième partie du deuxième small multiple
+# Consommation de données en GO par langue
+graph_3.2 <- ggplot(graph_3, aes(x=userlanguage, y=donnees_entrante_GO, fill=userlanguage)) + 
+  geom_bar(stat="identity", show.legend = FALSE, fill=getPalette(colourCount)) +
+  theme_minimal() +
+  theme(axis.title.y=element_blank(),
+        axis.text.y = element_blank()) +
+  background_grid(FALSE) +
+  labs(x ="" , y = "Consommation de données (GO)") +
+  coord_flip() + scale_y_reverse()
+
+# Regroupement des 2 parties du deuxième small multiple  
+p3 <- plot_grid(graph_3.2, graph_3.1,
+                nrow=1, ncol=2, rel_widths = c(1,1.3))
+
+# Titre du deuxième small multiple
+title_graph3 <- ggdraw() + draw_label("Comparaison de la consommation de données et du temps de session par langue", fontface='bold')
+
+# Print du deuxième small multiple
+plot_grid(title_graph3, p3, ncol=1, rel_heights=c(0.1, 1))
+```
+
+### Script pour la préparation du graphique *Sankey*
+
+```{r chart-4_script, warning=FALSE}
+#Reclassification des systèmes d'exploitations et de la consommation de données.
+graph_4 <- wifidataframe %>% select(Systeme = device_operating_system_name_version,
+                                           Appareil = device_portal_format,
+                                           Donnees = donnee_entrante_go) %>%
+  mutate(Donnees = as.integer(Donnees*1000)) %>%
+  mutate(Systeme = case_when(startsWith(Systeme,"An") ~ "Android",
+                        startsWith(Systeme,"iOS") ~ "iOS",
+                        startsWith(Systeme,"Mac") ~ "Mac",
+                        startsWith(Systeme,"PlayStation Vita") ~ "Playstation Vita",                        
+                        startsWith(Systeme,"Windows Phone") ~ "Windows Phone",
+                        Systeme=="Windows 10" | Systeme=="Windows 7" | Systeme=="Windows 8" | Systeme=="Windows Vista" | Systeme=="Windows XP" ~ "Windows",
+                        Systeme=="inconnu" | Systeme=="unknown" | is.na(Systeme) ~ "Inconnu",
+                        Systeme=="Linux unknown"~"Linux",
+                        TRUE ~ as.character(Systeme))) %>%
+  mutate(Donnees = case_when(Donnees <1~"<1 MO",
+                             Donnees >=1 & Donnees <500 ~"1-500 MO",
+                             Donnees >=500 & Donnees <1000~"0,5-1 GO",
+                             Donnees >=1000 & Donnees <10000~"1-10 GO",
+                             Donnees >=10000 & Donnees <50000~"10-50 GO",
+                             Donnees >=50000 & Donnees <=100000~"50-100 GO",
+                             Donnees >100000~">100 GO",
+                             TRUE ~ as.character(Donnees))) %>%
+  make_long(Systeme, Appareil, Donnees) # D'une table large à longue
+
+head(graph_4)
+```
+
+### Datavisualisation du *Sankey*
+
+```{r chart-4_dataviz, warning=FALSE, cache=TRUE}
+#Print Sankey
+ggplot(graph_4, aes(x = x, 
+                    next_x = next_x, 
+                    node = node,
+                    next_node = next_node,
+                    fill = factor(node),
+                    label = node))+
+  geom_sankey(flow.alpha=0.5,
+              node.color="Black",
+              show.legend = FALSE) +
+  geom_sankey_label(size = 4)+
+  theme_sankey(base_size = 16, base_line_size = 100)+
+  theme(legend.position = "none")
+```
+
+### Script pour la préparation du graphique du *Nombre de sessions par type d'appareil des 10 principaux hotspots*
+
+```{r chart-5_script, warning=FALSE}
+#Reclassification des types d'appareils.
+wifidataframe <- wifidataframe %>% mutate(device_portal_format = case_when(device_portal_format == "Computer" ~ "Ordinateur",
+                                                                           device_portal_format == "Tablet" ~ "Tablette",
+                                                                           TRUE ~ as.character(device_portal_format)))
+
+#Aggrégation du nombre de sessions par nom de hotspot et sélection des 10 plus importants.
+graph_05 <- wifidataframe %>% group_by(nom_site) %>%
+  summarise(NbSessions = n()) %>%
+  arrange(desc(NbSessions)) %>%
+  slice(1:10)
+
+#Aggrégation du nombre de sessions par nom de hotspot et par type d'appareil et filtre sur les 10 hotspots les plus importants.
+graph_5 <- wifidataframe %>% group_by(nom_site, device_portal_format) %>%
+  summarise(NbSessions = n()) %>%
+  filter(nom_site %in% graph_05$nom_site)
+
+#Tri selon les hotspots les plus importants.
+graph_5$nom_site <- ordered(graph_5$nom_site, levels=c("BIBLIOTHEQUE MARGUERITE DURAS", "MEDIATHEQUE FRANCOISE SAGAN", "JARDIN DU TROCADERO",
+                                                       "JARDIN NELSON MANDELA", "BIBLIOTHEQUE MARGUERITE YOURCENAR", "BIBLIOTHEQUE EDMOND ROSTAND",
+                                                       "BIBLIOTHEQUE HISTORIQUE DE LA VILLE DE PARIS (BHVP)", "PARC DE CHOISY",
+                                                       "BIBLIOTHEQUE VACLAV HAVEL", "BIBLIOTHEQUE AIME CESAIRE"))
+
+head(graph_5)
+```
+
+### Datavisualisation du graphique du *Nombre de sessions par type d'appareil des 10 principaux hotspots*
+
+```{r chart-5_dataviz, warning=FALSE}
+ggplot(graph_5, aes(x = " ", y = NbSessions, group = nom_site, fill = device_portal_format)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ nom_site, ncol = 5) +
+  theme(strip.text.x = element_text(size = 6, face = "bold")) +
+  guides(fill = guide_legend(title = "Type d'appareil")) +
+  labs(title = "Nombre de sessions par type d'appareil des 10 principaux hotspots", x = "Hotspots", y = "Nombre de sessions")+
+  theme_void()
+```
+
+### Script pour la préparation du graphique du *Nombre de sessions dans les 10 IRIS parisiens ayant le plus de sessions*
+
+```{r chart-6_script, warning=FALSE}
+#Jointure du nom de l'IRIS dans lequel se trouve la session.
+graph_06 <- st_join(wifi, IRIS["NOM_IRIS"])
+
+#Aggrégation par IRIS du nombre de sessions avec sélection des 10 IRIS ayant le plus de sessions. 
+graph_6 <- graph_06 %>% select(NOM_IRIS) %>%
+  group_by(NOM_IRIS) %>%
+  summarise(NbSessions = n()) %>%
+  arrange(desc(NbSessions)) %>%
+  slice(1:10)
+
+head(graph_6)
+```
+
+### Datavisualisation du graphique du *Nombre de sessions dans les 10 IRIS parisiens ayant le plus de sessions*
+
+```{r chart-6_dataviz, warning=FALSE}
+ggplot(graph_6, aes(fct_reorder(as.character(NOM_IRIS), NbSessions, .desc=TRUE), NbSessions, fill=NOM_IRIS)) + 
+  geom_bar(stat="identity", show.legend = FALSE) +
+  theme_classic() +
+  ggtitle("Nombre de sessions dans les 10 principaux IRIS parisiens")+
+  theme(plot.title = element_text(hjust = 0.5, size = 16))+
+  labs(x ="" , y = "Nb Connexions")
+```
+
+## Cartographies
+
+### Script pour la préparation de la cartographie du *Nombre de bornes et de hotspots par IRIS* et du *Taux de bornes par kilomètre carré*
+
+```{r carto-1-4_script, warning=FALSE, cache=TRUE}
+#Aggrégation du nombre de bornes wifi par hotspot.
+carto_01 <- wifi %>% select(code_site, nom_site, nombre_de_borne_wifi) %>%
+  group_by(nom_site) %>%
+  summarise(bornes_wifi = max(nombre_de_borne_wifi)) %>%
+  filter(!is.na(nom_site))
+
+#Jointure des informations du nombre de bornes wifi par hotspot aux IRIS et aggrégation du nombre de bornes et de hotspots par IRIS.
+carto_1 <- IRIS %>% st_join(carto_01, left = TRUE) %>%
+  group_by(CODE_IRIS, NOM_IRIS) %>%
+  summarise(NbBornes = sum(bornes_wifi),
+            NbHotspots = length(na.omit(nom_site)),
+            Sites = toString(unique(nom_site)))
+
+carto_1 <- carto_1 %>% mutate_if(is.numeric, ~replace(., is.na(.), 0))
+
+#Création de nouveaux champs.
+carto_1$SURFACE <- (st_area(carto_1) / 1000)
+
+carto_1$HS_km2 <- carto_1$NbHotspots / carto_1$SURFACE
+
+carto_1$B_km2 <- carto_1$NbBornes / carto_1$SURFACE
+
+head(carto_1)
+```
+
+IRIS ayant le plus de bornes wifi : **`r carto_1[which.max(carto_1$NbBornes), ][[1, 2]]`** avec **`r max(carto_1$NbBornes)`** bornes à disposition. Ces **`r max(carto_1$NbBornes)`** sont réparties sur **`r carto_1[which.max(carto_1$NbBornes), ][[1, 4]]`** hotspots : **`r carto_1[which.max(carto_1$NbBornes), ][[1, 5]]`**. <br />
+
+IRIS ayant le plus de hotspots : **`r carto_1[which.max(carto_1$NbHotspots), ][[1, 2]]`** équipés par un ensemble de **`r carto_1[which.max(carto_1$NbHotspots), ][[1, 3]]`** bornes. Ces hotspots sont : **`r carto_1[which.max(carto_1$NbHotspots), ][[1, 5]]`**
+
+### Script pour la préparation de la datavisualisation du *Nombre de bornes wifi par IRIS parisien*
+
+```{r carto-1_dataviz, warning=FALSE, cache=TRUE}
+choroLayer(x = carto_1,
+           var = "NbHotspots",
+           method = "fisher-jenks",
+           nclass = 4,
+           legend.title.txt = "Nombre de hotspot(s)",
+           legend.pos = "topright")
+layoutLayer(title = "Nombre de hotspots wifi par IRIS parisien",
+            sources = "DSIN - Ville de Paris & IGN")
+```
+
+### Script pour la préparation de la datavisualisation du *Taux de bornes par kilomètre carré*
+
+```{r carto-4_dataviz, warning=FALSE, cache=TRUE}
+choroLayer(x = carto_1,
+           var = "B_km2",
+           method = "fisher-jenks",
+           nclass = 5,
+           legend.title.txt = "Taux de bornes/km2",
+           legend.pos = "topright",
+           legend.values.rnd = 4)
+layoutLayer(title = "Taux de bornes par kilomètre carré",
+            sources = "DSIN - Ville de Paris & IGN")
+```
+
+### Script pour la préparation de la cartographie du *Nombre de bornes wifi par hotspot*
+
+```{r carto-2_script, warning=FALSE, cache=TRUE}
+#Aggrégation du nombre de bornes wifi par hotspot.
+carto_2 <- wifi %>% select(code_site, nom_site, nombre_de_borne_wifi) %>%
+  group_by(code_site) %>%
+  summarise(bornes_wifi = max(nombre_de_borne_wifi)) %>%
+  filter(!is.na(code_site))
+
+head(carto_2)
+```
+
+### Script pour la préparation de la datavisualisation du *Nombre de bornes wifi par hotspot*
+
+```{r carto-2_dataviz, warning=FALSE, cache=TRUE}
+plot(st_geometry(st_union(carto_1)),
+     col = "grey80",
+     border = "white")
+propSymbolsLayer(x = carto_2,
+                 var = "bornes_wifi",
+                 col = "#a7dfb4",
+                 legend.title.txt = "Nombre de borne(s)",
+                 legend.pos = "topright"
+)
+layoutLayer(title = "Nombre de borne wifi par hotspot",
+            sources = "DSIN - Ville de Paris & IGN")
+```
+
+### Script pour la préparation de la cartographie de *Zone de chalandise des hotspots*
+
+```{r carto-3_script, warning=FALSE, cache=TRUE}
+#Aggrégation du nombre de connexions et des temps (moyen et total) des sessions par hotspot.
+carto_03 <- wifi %>%
+  group_by(code_site) %>%
+  summarise(NbConnexions = n(),
+            Temps_moy = mean(duration / 60),
+            Temps_total = sum(duration / 60)) %>%
+  filter(!is.na(code_site))
+
+#Création de polygones de Voronoï selon les hotspots.
+carto_3 <- st_voronoi(x = st_union(carto_03))
+carto_3 <- st_intersection(st_cast(carto_3), st_union(IRIS))
+carto_3 <- st_join(x = st_sf(carto_3), y = carto_03, join=st_intersects)
+carto_3 <- st_cast(carto_3, "MULTIPOLYGON")
+
+carto_3$SURFACE <- st_area(carto_3)
+
+head(carto_3)
+```
+
+### Script pour la préparation de la datavisualisation du *Zone de chalandise des hotspots*
+
+```{r carto-3_dataviz, warning=FALSE, cache=TRUE}
+choroLayer(x = carto_3,
+           var = "NbConnexions",
+           method = "fisher-jenks",
+           nclass = 4,
+           legend.title.txt = "Nombre de session(s)",
+           legend.pos = "topright")
+layoutLayer(title = "Nombre de sessions par zone de chalandise des hotspots",
+            sources = "DSIN - Ville de Paris")
+```
+
+### Script pour la préparation de la cartographie des *Langues les plus présentes aux IRIS*
+
+```{r carto-5_script, warning=FALSE, cache=TRUE}
+#Filtre des données pour ne conserver que les utilisateurs faisant partis des 5 langues étrangères majoritaires.
+carto_05 <- wifi %>% filter(userlanguage == "Anglais" | userlanguage == "Espagnol" | userlanguage == "Russe" | userlanguage == "Allemand" | userlanguage == "Portugais")
+
+#Jointure du code IRIS aux sessions.
+carto_5 <- carto_05 %>% st_join(IRIS, left = TRUE) %>% select(CODE_IRIS, userlanguage, duration)
+
+#Création d'un objet sf pour chaque langue.
+#Aggrégation du nombre de connexions et du temps moyen des sessions et jointure spatial avec les IRIS.
+carto_5.anglais <- as.data.frame(carto_5) %>% select(CODE_IRIS, userlanguage, duration) %>%
+  filter(userlanguage == "Anglais") %>%
+  group_by(CODE_IRIS) %>%
+  summarise(NbConnexions = n(),
+            Temps_moy = mean(duration / 60))
+  carto_5.anglais <- left_join(IRIS, carto_5.anglais, by = "CODE_IRIS") %>%
+  mutate_if(is.numeric, ~replace(., is.na(.), 0))
+
+carto_5.espagnol <- as.data.frame(carto_5) %>% select(CODE_IRIS, userlanguage, duration) %>%
+  filter(userlanguage == "Espagnol") %>%
+  group_by(CODE_IRIS) %>%
+  summarise(NbConnexions = n(),
+            Temps_moy = mean(duration / 60))
+carto_5.espagnol <- left_join(IRIS, carto_5.espagnol, by = "CODE_IRIS") %>%
+  mutate_if(is.numeric, ~replace(., is.na(.), 0))
+
+carto_5.russe <- as.data.frame(carto_5) %>% select(CODE_IRIS, userlanguage, duration) %>%
+  filter(userlanguage == "Russe") %>%
+  group_by(CODE_IRIS) %>%
+  summarise(NbConnexions = n(),
+            Temps_moy = mean(duration / 60))
+carto_5.russe <- left_join(IRIS, carto_5.russe, by = "CODE_IRIS") %>%
+  mutate_if(is.numeric, ~replace(., is.na(.), 0))
+
+carto_5.allemand <- as.data.frame(carto_5) %>% select(CODE_IRIS, userlanguage, duration) %>%
+  filter(userlanguage == "Allemand") %>%
+  group_by(CODE_IRIS) %>%
+  summarise(NbConnexions = n(),
+            Temps_moy = mean(duration / 60))
+carto_5.allemand <- left_join(IRIS, carto_5.allemand, by = "CODE_IRIS") %>%
+  mutate_if(is.numeric, ~replace(., is.na(.), 0))
+
+carto_5.portugais <- as.data.frame(carto_5) %>% select(CODE_IRIS, userlanguage, duration) %>%
+  filter(userlanguage == "Portugais") %>%
+  group_by(CODE_IRIS) %>%
+  summarise(NbConnexions = n(),
+            Temps_moy = mean(duration / 60))
+carto_5.portugais <- left_join(IRIS, carto_5.portugais, by = "CODE_IRIS") %>%
+  mutate_if(is.numeric, ~replace(., is.na(.), 0))
+
+head(carto_5.anglais)
+```
+
+### Script pour la préparation de la datavisualisation du *Langues les plus présentes aux IRIS*
+
+```{r carto-5_dataviz, warning=FALSE, cache=TRUE}
+choroLayer(x = carto_5.anglais,
+           var = "Temps_moy",
+           breaks = c(0,15,30,50,70,90,121),
+           nclass = 5,
+           legend.title.txt = "Temps moyen de connexion",
+           legend.pos = "topright")
+layoutLayer(title = "Temps moyen de connexion par IRIS pour la langue : Anglais",
+            sources = "DSIN - Ville de Paris & IGN")
+
+choroLayer(x = carto_5.allemand,
+           var = "Temps_moy",
+           breaks = c(0,15,30,50,70,90,121),
+           nclass = 5,
+           legend.title.txt = "Temps moyen de connexion",
+           legend.pos = "topright")
+layoutLayer(title = "Temps moyen de connexion par IRIS pour la langue : Allemand",
+            sources = "DSIN - Ville de Paris & IGN")
+
+choroLayer(x = carto_5.espagnol,
+           var = "Temps_moy",
+           breaks = c(0,15,30,50,70,90,121),
+           nclass = 5,
+           legend.title.txt = "Temps moyen de connexion",
+           legend.pos = "topright")
+layoutLayer(title = "Temps moyen de connexion par IRIS pour la langue : Espagnol",
+            sources = "DSIN - Ville de Paris & IGN")
+
+choroLayer(x = carto_5.portugais,
+           var = "Temps_moy",
+           breaks = c(0,15,30,50,70,90,121),
+           nclass = 5,
+           legend.title.txt = "Temps moyen de connexion",
+           legend.pos = "topright")
+layoutLayer(title = "Temps moyen de connexion par IRIS pour la langue : Portugais",
+            sources = "DSIN - Ville de Paris & IGN")
+
+choroLayer(x = carto_5.russe,
+           var = "Temps_moy",
+           breaks = c(0,15,30,50,70,90,121),
+           nclass = 5,
+           legend.title.txt = "Temps moyen de connexion",
+           legend.pos = "topright")
+layoutLayer(title = "Temps moyen de connexion par IRIS pour la langue : Russe",
+            sources = "DSIN - Ville de Paris & IGN")
+```
